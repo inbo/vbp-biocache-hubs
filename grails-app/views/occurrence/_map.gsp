@@ -259,7 +259,15 @@
 
         MAP_VAR.layerControl = L.control.layers(MAP_VAR.baseLayers, MAP_VAR.overlays, {collapsed:true, position:'topleft'});
         MAP_VAR.layerControl.addTo(MAP_VAR.map);
+        var popupAutoPan = false;
+        MAP_VAR.map.on('autopanstart', function() {
+            popupAutoPan = true;
+        });
         MAP_VAR.map.on('moveend', function() {
+            if (popupAutoPan) {
+                popupAutoPan = false;
+                return;
+            }
             if (UTM_GRID_MODES[$('#colourBySelect').val()]) {
                 addQueryLayer(true);
             }
@@ -494,7 +502,7 @@
 
         var layer;
         if (utmGridMode) {
-            layer = L.geoJSON(null);
+            layer = L.geoJson(null);
         } else {
             layer = L.tileLayer.wms(MAP_VAR.mappingUrl + "/mapping/wms/reflect" + MAP_VAR.query + MAP_VAR.additionalFqs, {
             layers: 'ALA:occurrences',
@@ -567,7 +575,7 @@
         MAP_VAR.currentLayers.push(layer);
 
         if (utmGridMode) {
-            loadUtmGridDensity(layer, utmGridMode, parseFloat(opacity));
+            loadUtmGridDensity(layer, utmGridMode);
         }
 
         for (let key in MAP_VAR.overlays) {
@@ -620,7 +628,7 @@
         $legend.append($('<tr>').append($('<td>').text(minCount.toLocaleString() + ' - ' + maxCount.toLocaleString())));
     }
 
-    function loadUtmGridDensity(layer, mode, opacity) {
+    function loadUtmGridDensity(layer, mode) {
         var requestId = ++MAP_VAR.utmGridRequestId;
         var bounds = MAP_VAR.map.getBounds();
         var west = bounds.getWest();
@@ -693,8 +701,10 @@
 
             layer.clearLayers();
             layer.addData({type: 'FeatureCollection', features: visibleFeatures});
+            var opacity = parseFloat($('#opacityslider-val').text());
             layer.setStyle(function(feature) {
-                var fraction = Math.log(counts[feature.properties.TAG] + 1) / Math.log(maxCount + 1);
+                var fraction = maxCount === minCount ? 1 :
+                    (counts[feature.properties.TAG] - minCount) / (maxCount - minCount);
                 var colorIndex = Math.min(colors.length - 1, Math.floor(fraction * colors.length));
                 return {color: '#555', weight: 0.6, fillColor: colors[colorIndex], fillOpacity: opacity};
             });
