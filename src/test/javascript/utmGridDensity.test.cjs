@@ -84,6 +84,9 @@ test('UTM layers use the factory provided by the bundled Leaflet version', () =>
     assert.match(leaflet, /L\.geoJson = function/);
     assert.match(source, /layer = L\.geoJson\(null\)/);
     assert.doesNotMatch(source, /L\.geoJSON\(/);
+    assert.match(source, /utm-grid-1000'.*layer: 'ALA:utm1_vl_wgs84'/);
+    assert.match(source, /utm-grid-5000'.*layer: 'ALA:utm5_vl_wgs84'/);
+    assert.doesNotMatch(source, /layer: 'ALA:utm5'/);
 });
 
 test('UTM facet IDs are configurable with production defaults', () => {

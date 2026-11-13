@@ -113,7 +113,7 @@
 
     var UTM_GRID_MODES = {
         'utm-grid-1000': {facet: '${grailsApplication.config.getProperty("map.utmGrid.facet1km", String, "cl10531")}', layer: 'ALA:utm1_vl_wgs84', maxFeatures: 2500},
-        'utm-grid-5000': {facet: '${grailsApplication.config.getProperty("map.utmGrid.facet5km", String, "cl200")}', layer: 'ALA:utm5', maxFeatures: 2500}
+        'utm-grid-5000': {facet: '${grailsApplication.config.getProperty("map.utmGrid.facet5km", String, "cl200")}', layer: 'ALA:utm5_vl_wgs84', maxFeatures: 2500}
     };
 
     var MAP_VAR = {
