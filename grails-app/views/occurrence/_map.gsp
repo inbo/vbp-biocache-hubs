@@ -268,8 +268,10 @@
                 popupAutoPan = false;
                 return;
             }
-            if (UTM_GRID_MODES[$('#colourBySelect').val()]) {
-                addQueryLayer(true);
+            var mode = UTM_GRID_MODES[$('#colourBySelect').val()];
+            if (mode && MAP_VAR.currentLayers.length === 1) {
+                setUtmGridLegend('<g:message code="map.utmdensity.loading" default="Loading UTM grid..."/>');
+                loadUtmGridDensity(MAP_VAR.currentLayers[0], mode);
             }
         });
     $('<option>').val('utm-grid-1000').text('<g:message code="map.maplayercontrols.utmgrid1km" default="UTM 1 km grid"/>').insertAfter($('#colourBySelect option[value="grid"]'));
@@ -635,7 +637,7 @@
         var south = bounds.getSouth();
         var east = bounds.getEast();
         var north = bounds.getNorth();
-        var queryBuffer = mode.facet === 'cl10531' ? 0.02 : 0.07;
+        layer.clearLayers();
         var queryParams = new URLSearchParams((MAP_VAR.query || '?q=*:*').replace(/^\?/, ''));
         queryParams.set('facets', mode.facet);
         queryParams.set('flimit', '-1');
@@ -645,9 +647,6 @@
                 queryParams.append(key, value);
             });
         }
-        queryParams.append('fq', 'decimalLatitude:[' + (south - queryBuffer) + ' TO ' + (north + queryBuffer) + ']');
-        queryParams.append('fq', 'decimalLongitude:[' + (west - queryBuffer) + ' TO ' + (east + queryBuffer) + ']');
-
         var serviceUrl = MAP_VAR.mappingUrl.replace(/\/$/, '');
         var wfsData = {
             service: 'WFS',
@@ -660,63 +659,69 @@
             maxFeatures: mode.maxFeatures + 1
         };
 
-        $.when(
-            $.ajax({url: serviceUrl + '/occurrences/search.json?' + queryParams.toString(), dataType: 'json'}),
-            $.ajax({url: MAP_VAR.spatialWfsUrl, data: wfsData, dataType: 'json'})
-        ).done(function(searchResult, featureResult) {
+        $.ajax({url: MAP_VAR.spatialWfsUrl, data: wfsData, dataType: 'json'}).then(function(featureData) {
             if (requestId !== MAP_VAR.utmGridRequestId) return;
 
-            var searchData = searchResult[0];
-            var featureData = featureResult[0];
             var totalFeatures = Number(featureData.totalFeatures || featureData.numberMatched || featureData.features.length);
             if (featureData.features.length > mode.maxFeatures || totalFeatures > mode.maxFeatures) {
                 setUtmGridLegend('<g:message code="map.utmdensity.zoom" default="Zoom in to display this grid resolution."/>');
                 return;
             }
-
-            var facetResult = (searchData.facetResults || []).filter(function(result) {
-                return result.fieldName === mode.facet;
-            })[0];
-            var counts = {};
-            (facetResult ? facetResult.fieldResult : []).forEach(function(result) {
-                counts[result.label] = Number(result.count);
-            });
-
-            var visibleFeatures = featureData.features.filter(function(feature) {
-                return feature.properties && counts[feature.properties.TAG] > 0;
-            });
-            if (!visibleFeatures.length) {
+            if (!featureData.features.length) {
                 setUtmGridLegend('<g:message code="map.utmdensity.empty" default="No records in this map view."/>');
                 return;
             }
 
-            var maxCount = Math.max.apply(null, visibleFeatures.map(function(feature) {
-                return counts[feature.properties.TAG];
-            }));
-            var minCount = Math.min.apply(null, visibleFeatures.map(function(feature) {
-                return counts[feature.properties.TAG];
-            }));
-            var colors = ['#fff7bc', '#fec44f', '#fe9929', '#ec7014', '#cc4c02', '#8c2d04'];
-            var recordsLabel = '<g:message code="map.utmdensity.records" default="records per cell"/>';
+            var cellBounds = L.geoJson(featureData).getBounds();
+            queryParams.append('fq', 'decimalLatitude:[' + cellBounds.getSouth() + ' TO ' + cellBounds.getNorth() + ']');
+            queryParams.append('fq', 'decimalLongitude:[' + cellBounds.getWest() + ' TO ' + cellBounds.getEast() + ']');
 
-            layer.clearLayers();
-            layer.addData({type: 'FeatureCollection', features: visibleFeatures});
-            var opacity = parseFloat($('#opacityslider-val').text());
-            layer.setStyle(function(feature) {
-                var fraction = maxCount === minCount ? 1 :
-                    (counts[feature.properties.TAG] - minCount) / (maxCount - minCount);
-                var colorIndex = Math.min(colors.length - 1, Math.floor(fraction * colors.length));
-                return {color: '#555', weight: 0.6, fillColor: colors[colorIndex], fillOpacity: opacity};
-            });
-            layer.eachLayer(function(cellLayer) {
-                var cellCode = cellLayer.feature.properties.TAG;
-                var popup = $('<div>').append($('<strong>').text(cellCode)).append('<br>')
-                    .append($('<span>').text(counts[cellCode].toLocaleString() + ' ' + recordsLabel));
-                cellLayer.bindPopup(popup[0]);
-            });
+            return $.ajax({url: serviceUrl + '/occurrences/search.json?' + queryParams.toString(), dataType: 'json'}).then(function(searchData) {
+                if (requestId !== MAP_VAR.utmGridRequestId) return;
 
-            var modeLabel = $('#colourBySelect option:selected').text();
-            setUtmGridLegend(null, modeLabel, minCount, maxCount);
+                var facetResult = (searchData.facetResults || []).filter(function(result) {
+                    return result.fieldName === mode.facet;
+                })[0];
+                var counts = {};
+                (facetResult ? facetResult.fieldResult : []).forEach(function(result) {
+                    counts[result.label] = Number(result.count);
+                });
+
+                var visibleFeatures = featureData.features.filter(function(feature) {
+                    return feature.properties && counts[feature.properties.TAG] > 0;
+                });
+                if (!visibleFeatures.length) {
+                    setUtmGridLegend('<g:message code="map.utmdensity.empty" default="No records in this map view."/>');
+                    return;
+                }
+
+                var maxCount = Math.max.apply(null, visibleFeatures.map(function(feature) {
+                    return counts[feature.properties.TAG];
+                }));
+                var minCount = Math.min.apply(null, visibleFeatures.map(function(feature) {
+                    return counts[feature.properties.TAG];
+                }));
+                var colors = ['#fff7bc', '#fec44f', '#fe9929', '#ec7014', '#cc4c02', '#8c2d04'];
+                var recordsLabel = '<g:message code="map.utmdensity.records" default="records per cell"/>';
+
+                layer.addData({type: 'FeatureCollection', features: visibleFeatures});
+                var opacity = parseFloat($('#opacityslider-val').text());
+                layer.setStyle(function(feature) {
+                    var fraction = maxCount === minCount ? 1 :
+                        (counts[feature.properties.TAG] - minCount) / (maxCount - minCount);
+                    var colorIndex = Math.min(colors.length - 1, Math.floor(fraction * colors.length));
+                    return {color: '#555', weight: 0.6, fillColor: colors[colorIndex], fillOpacity: opacity};
+                });
+                layer.eachLayer(function(cellLayer) {
+                    var cellCode = cellLayer.feature.properties.TAG;
+                    var popup = $('<div>').append($('<strong>').text(cellCode)).append('<br>')
+                        .append($('<span>').text(counts[cellCode].toLocaleString() + ' ' + recordsLabel));
+                    cellLayer.bindPopup(popup[0]);
+                });
+
+                var modeLabel = $('#colourBySelect option:selected').text();
+                setUtmGridLegend(null, modeLabel, minCount, maxCount);
+            });
         }).fail(function() {
             if (requestId === MAP_VAR.utmGridRequestId) {
                 setUtmGridLegend('<g:message code="map.utmdensity.error" default="Unable to load UTM grid data."/>');
