@@ -112,8 +112,8 @@
         });
 
     var UTM_GRID_MODES = {
-        'utm-grid-1000': {facet: 'cl10531', layer: 'ALA:utm1_vl_wgs84', maxFeatures: 2500},
-        'utm-grid-5000': {facet: 'cl200', layer: 'ALA:utm5', maxFeatures: 2500}
+        'utm-grid-1000': {facet: '${grailsApplication.config.getProperty("map.utmGrid.facet1km", String, "cl10531")}', layer: 'ALA:utm1_vl_wgs84', maxFeatures: 2500},
+        'utm-grid-5000': {facet: '${grailsApplication.config.getProperty("map.utmGrid.facet5km", String, "cl200")}', layer: 'ALA:utm5_vl_wgs84', maxFeatures: 2500}
     };
 
     var MAP_VAR = {
@@ -259,9 +259,19 @@
 
         MAP_VAR.layerControl = L.control.layers(MAP_VAR.baseLayers, MAP_VAR.overlays, {collapsed:true, position:'topleft'});
         MAP_VAR.layerControl.addTo(MAP_VAR.map);
+        var popupAutoPan = false;
+        MAP_VAR.map.on('autopanstart', function() {
+            popupAutoPan = true;
+        });
         MAP_VAR.map.on('moveend', function() {
-            if (UTM_GRID_MODES[$('#colourBySelect').val()]) {
-                addQueryLayer(true);
+            if (popupAutoPan) {
+                popupAutoPan = false;
+                return;
+            }
+            var mode = UTM_GRID_MODES[$('#colourBySelect').val()];
+            if (mode && MAP_VAR.currentLayers.length === 1) {
+                setUtmGridLegend('<g:message code="map.utmdensity.loading" default="Loading UTM grid..."/>');
+                loadUtmGridDensity(MAP_VAR.currentLayers[0], mode);
             }
         });
     $('<option>').val('utm-grid-1000').text('<g:message code="map.maplayercontrols.utmgrid1km" default="UTM 1 km grid"/>').insertAfter($('#colourBySelect option[value="grid"]'));
@@ -494,7 +504,7 @@
 
         var layer;
         if (utmGridMode) {
-            layer = L.geoJSON(null);
+            layer = L.geoJson(null);
         } else {
             layer = L.tileLayer.wms(MAP_VAR.mappingUrl + "/mapping/wms/reflect" + MAP_VAR.query + MAP_VAR.additionalFqs, {
             layers: 'ALA:occurrences',
@@ -567,7 +577,7 @@
         MAP_VAR.currentLayers.push(layer);
 
         if (utmGridMode) {
-            loadUtmGridDensity(layer, utmGridMode, parseFloat(opacity));
+            loadUtmGridDensity(layer, utmGridMode);
         }
 
         for (let key in MAP_VAR.overlays) {
@@ -620,14 +630,14 @@
         $legend.append($('<tr>').append($('<td>').text(minCount.toLocaleString() + ' - ' + maxCount.toLocaleString())));
     }
 
-    function loadUtmGridDensity(layer, mode, opacity) {
+    function loadUtmGridDensity(layer, mode) {
         var requestId = ++MAP_VAR.utmGridRequestId;
         var bounds = MAP_VAR.map.getBounds();
         var west = bounds.getWest();
         var south = bounds.getSouth();
         var east = bounds.getEast();
         var north = bounds.getNorth();
-        var queryBuffer = mode.facet === 'cl10531' ? 0.02 : 0.07;
+        layer.clearLayers();
         var queryParams = new URLSearchParams((MAP_VAR.query || '?q=*:*').replace(/^\?/, ''));
         queryParams.set('facets', mode.facet);
         queryParams.set('flimit', '-1');
@@ -637,9 +647,6 @@
                 queryParams.append(key, value);
             });
         }
-        queryParams.append('fq', 'decimalLatitude:[' + (south - queryBuffer) + ' TO ' + (north + queryBuffer) + ']');
-        queryParams.append('fq', 'decimalLongitude:[' + (west - queryBuffer) + ' TO ' + (east + queryBuffer) + ']');
-
         var serviceUrl = MAP_VAR.mappingUrl.replace(/\/$/, '');
         var wfsData = {
             service: 'WFS',
@@ -652,61 +659,69 @@
             maxFeatures: mode.maxFeatures + 1
         };
 
-        $.when(
-            $.ajax({url: serviceUrl + '/occurrences/search.json?' + queryParams.toString(), dataType: 'json'}),
-            $.ajax({url: MAP_VAR.spatialWfsUrl, data: wfsData, dataType: 'json'})
-        ).done(function(searchResult, featureResult) {
+        $.ajax({url: MAP_VAR.spatialWfsUrl, data: wfsData, dataType: 'json'}).then(function(featureData) {
             if (requestId !== MAP_VAR.utmGridRequestId) return;
 
-            var searchData = searchResult[0];
-            var featureData = featureResult[0];
             var totalFeatures = Number(featureData.totalFeatures || featureData.numberMatched || featureData.features.length);
             if (featureData.features.length > mode.maxFeatures || totalFeatures > mode.maxFeatures) {
                 setUtmGridLegend('<g:message code="map.utmdensity.zoom" default="Zoom in to display this grid resolution."/>');
                 return;
             }
-
-            var facetResult = (searchData.facetResults || []).filter(function(result) {
-                return result.fieldName === mode.facet;
-            })[0];
-            var counts = {};
-            (facetResult ? facetResult.fieldResult : []).forEach(function(result) {
-                counts[result.label] = Number(result.count);
-            });
-
-            var visibleFeatures = featureData.features.filter(function(feature) {
-                return feature.properties && counts[feature.properties.TAG] > 0;
-            });
-            if (!visibleFeatures.length) {
+            if (!featureData.features.length) {
                 setUtmGridLegend('<g:message code="map.utmdensity.empty" default="No records in this map view."/>');
                 return;
             }
 
-            var maxCount = Math.max.apply(null, visibleFeatures.map(function(feature) {
-                return counts[feature.properties.TAG];
-            }));
-            var minCount = Math.min.apply(null, visibleFeatures.map(function(feature) {
-                return counts[feature.properties.TAG];
-            }));
-            var colors = ['#fff7bc', '#fec44f', '#fe9929', '#ec7014', '#cc4c02', '#8c2d04'];
-            var recordsLabel = '<g:message code="map.utmdensity.records" default="records per cell"/>';
+            var cellBounds = L.geoJson(featureData).getBounds();
+            queryParams.append('fq', 'decimalLatitude:[' + cellBounds.getSouth() + ' TO ' + cellBounds.getNorth() + ']');
+            queryParams.append('fq', 'decimalLongitude:[' + cellBounds.getWest() + ' TO ' + cellBounds.getEast() + ']');
 
-            layer.clearLayers();
-            layer.addData({type: 'FeatureCollection', features: visibleFeatures});
-            layer.setStyle(function(feature) {
-                var fraction = Math.log(counts[feature.properties.TAG] + 1) / Math.log(maxCount + 1);
-                var colorIndex = Math.min(colors.length - 1, Math.floor(fraction * colors.length));
-                return {color: '#555', weight: 0.6, fillColor: colors[colorIndex], fillOpacity: opacity};
-            });
-            layer.eachLayer(function(cellLayer) {
-                var cellCode = cellLayer.feature.properties.TAG;
-                var popup = $('<div>').append($('<strong>').text(cellCode)).append('<br>')
-                    .append($('<span>').text(counts[cellCode].toLocaleString() + ' ' + recordsLabel));
-                cellLayer.bindPopup(popup[0]);
-            });
+            return $.ajax({url: serviceUrl + '/occurrences/search.json?' + queryParams.toString(), dataType: 'json'}).then(function(searchData) {
+                if (requestId !== MAP_VAR.utmGridRequestId) return;
 
-            var modeLabel = $('#colourBySelect option:selected').text();
-            setUtmGridLegend(null, modeLabel, minCount, maxCount);
+                var facetResult = (searchData.facetResults || []).filter(function(result) {
+                    return result.fieldName === mode.facet;
+                })[0];
+                var counts = {};
+                (facetResult ? facetResult.fieldResult : []).forEach(function(result) {
+                    counts[result.label] = Number(result.count);
+                });
+
+                var visibleFeatures = featureData.features.filter(function(feature) {
+                    return feature.properties && counts[feature.properties.TAG] > 0;
+                });
+                if (!visibleFeatures.length) {
+                    setUtmGridLegend('<g:message code="map.utmdensity.empty" default="No records in this map view."/>');
+                    return;
+                }
+
+                var maxCount = Math.max.apply(null, visibleFeatures.map(function(feature) {
+                    return counts[feature.properties.TAG];
+                }));
+                var minCount = Math.min.apply(null, visibleFeatures.map(function(feature) {
+                    return counts[feature.properties.TAG];
+                }));
+                var colors = ['#fff7bc', '#fec44f', '#fe9929', '#ec7014', '#cc4c02', '#8c2d04'];
+                var recordsLabel = '<g:message code="map.utmdensity.records" default="records per cell"/>';
+
+                layer.addData({type: 'FeatureCollection', features: visibleFeatures});
+                var opacity = parseFloat($('#opacityslider-val').text());
+                layer.setStyle(function(feature) {
+                    var fraction = maxCount === minCount ? 1 :
+                        (counts[feature.properties.TAG] - minCount) / (maxCount - minCount);
+                    var colorIndex = Math.min(colors.length - 1, Math.floor(fraction * colors.length));
+                    return {color: '#555', weight: 0.6, fillColor: colors[colorIndex], fillOpacity: opacity};
+                });
+                layer.eachLayer(function(cellLayer) {
+                    var cellCode = cellLayer.feature.properties.TAG;
+                    var popup = $('<div>').append($('<strong>').text(cellCode)).append('<br>')
+                        .append($('<span>').text(counts[cellCode].toLocaleString() + ' ' + recordsLabel));
+                    cellLayer.bindPopup(popup[0]);
+                });
+
+                var modeLabel = $('#colourBySelect option:selected').text();
+                setUtmGridLegend(null, modeLabel, minCount, maxCount);
+            });
         }).fail(function() {
             if (requestId === MAP_VAR.utmGridRequestId) {
                 setUtmGridLegend('<g:message code="map.utmdensity.error" default="Unable to load UTM grid data."/>');
