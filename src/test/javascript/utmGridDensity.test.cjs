@@ -86,6 +86,11 @@ test('UTM layers use the factory provided by the bundled Leaflet version', () =>
     assert.doesNotMatch(source, /L\.geoJSON\(/);
 });
 
+test('UTM facet IDs are configurable with production defaults', () => {
+    assert.match(source, /map\.utmGrid\.facet1km", String, "cl10531"/);
+    assert.match(source, /map\.utmGrid\.facet5km", String, "cl200"/);
+});
+
 test('popup auto-pan keeps the grid, but subsequent ordinary movement refreshes it', () => {
     const handlers = {};
     const hiddenGridLayer = {};
