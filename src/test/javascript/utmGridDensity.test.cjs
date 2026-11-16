@@ -94,6 +94,10 @@ test('UTM facet IDs are configurable with production defaults', () => {
     assert.match(source, /map\.utmGrid\.facet5km", String, "cl200"/);
 });
 
+test('UTM 5 km is selected when configured as the default map colour', () => {
+    assert.match(source, /\.prop\('selected', '\$\{defaultColourBy\}' === 'utm-grid-5000'\)/);
+});
+
 test('clicking a cell count filters that cell and preserves other filters and the map tab', () => {
     const context = {
         MAP_VAR: {query: '?q=speciesGroup:bird&fq=cl102:"Vlaams Gewest"&fq=cl10165:"old-cell"'},

@@ -275,7 +275,9 @@
             }
         });
     $('<option>').val('utm-grid-1000').text('<g:message code="map.maplayercontrols.utmgrid1km" default="UTM 1 km grid"/>').insertAfter($('#colourBySelect option[value="grid"]'));
-    $('<option>').val('utm-grid-5000').text('<g:message code="map.maplayercontrols.utmgrid5km" default="UTM 5 km grid"/>').insertAfter($('#colourBySelect option[value="utm-grid-1000"]'));
+    $('<option>').val('utm-grid-5000').text('<g:message code="map.maplayercontrols.utmgrid5km" default="UTM 5 km grid"/>')
+        .prop('selected', '${defaultColourBy}' === 'utm-grid-5000')
+        .insertAfter($('#colourBySelect option[value="utm-grid-1000"]'));
 
         addQueryLayer(true);
 
