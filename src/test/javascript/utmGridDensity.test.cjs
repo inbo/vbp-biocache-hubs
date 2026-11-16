@@ -94,6 +94,22 @@ test('UTM facet IDs are configurable with production defaults', () => {
     assert.match(source, /map\.utmGrid\.facet5km", String, "cl200"/);
 });
 
+test('clicking a cell count filters that cell and preserves other filters and the map tab', () => {
+    const context = {
+        MAP_VAR: {query: '?q=speciesGroup:bird&fq=cl102:"Vlaams Gewest"&fq=cl10165:"old-cell"'},
+        URLSearchParams,
+        window: {location: {pathname: '/biocache-hub/occurrences/search', hash: '#tab_mapView'}}
+    };
+    vm.createContext(context);
+    vm.runInContext(templateSection('    function buildUtmCellFilterUrl(', '    function loadUtmGridDensity('), context);
+
+    const url = new URL(context.buildUtmCellFilterUrl({facet: 'cl10165'}, 'FS1447'), 'https://example.org');
+    assert.equal(url.pathname, '/biocache-hub/occurrences/search');
+    assert.equal(url.hash, '#tab_mapView');
+    assert.equal(url.searchParams.get('q'), 'speciesGroup:bird');
+    assert.deepEqual(url.searchParams.getAll('fq'), ['cl102:"Vlaams Gewest"', 'cl10165:"FS1447"']);
+});
+
 test('popup auto-pan keeps the grid, but subsequent ordinary movement refreshes it', () => {
     const handlers = {};
     const hiddenGridLayer = {};

@@ -630,6 +630,20 @@
         $legend.append($('<tr>').append($('<td>').text(minCount.toLocaleString() + ' - ' + maxCount.toLocaleString())));
     }
 
+    function buildUtmCellFilterUrl(mode, cellCode) {
+        var queryParams = new URLSearchParams((MAP_VAR.query || '?q=*:*').replace(/^\?/, ''));
+        var existingFilters = queryParams.getAll('fq').filter(function(filter) {
+            return filter.trim().replace(/^-/, '').indexOf(mode.facet + ':') !== 0;
+        });
+        queryParams.delete('fq');
+        existingFilters.forEach(function(filter) {
+            queryParams.append('fq', filter);
+        });
+        queryParams.append('fq', mode.facet + ':"' + cellCode + '"');
+
+        return window.location.pathname + '?' + queryParams.toString() + window.location.hash;
+    }
+
     function loadUtmGridDensity(layer, mode) {
         var requestId = ++MAP_VAR.utmGridRequestId;
         var bounds = MAP_VAR.map.getBounds();
@@ -714,8 +728,10 @@
                 });
                 layer.eachLayer(function(cellLayer) {
                     var cellCode = cellLayer.feature.properties.TAG;
+                    var recordsLink = $('<a>').attr('href', buildUtmCellFilterUrl(mode, cellCode))
+                        .text(counts[cellCode].toLocaleString() + ' ' + recordsLabel);
                     var popup = $('<div>').append($('<strong>').text(cellCode)).append('<br>')
-                        .append($('<span>').text(counts[cellCode].toLocaleString() + ' ' + recordsLabel));
+                        .append(recordsLink);
                     cellLayer.bindPopup(popup[0]);
                 });
 
