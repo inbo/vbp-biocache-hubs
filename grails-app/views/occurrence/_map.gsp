@@ -1,6 +1,33 @@
 <%@ page contentType="text/html;charset=UTF-8" %>
 <asset:stylesheet src="map.css"/>
 <g:set var="shortName" value="${grailsApplication.config.getProperty('skin.orgNameShort')}"/>
+<%--
+    Grid layers: polygon cells from a WFS layer, coloured by the record count per cell taken from a
+    biocache facet whose values match a cell code attribute of the WFS layer. Configured as e.g.
+
+    map:
+      gridLayers:
+        wfsUrl: https://example.org/geoserver/wfs   # defaults to /geoserver/wfs on the current host
+        layers:
+          - id: utm-grid-5000          # optional, value usable in map.defaultFacetMapColourBy, defaults to grid-<facet>
+            facet: cl200               # required, label is taken from the facet.<facet> message
+            wfsLayer: ALA:utm5         # required
+            cellProperty: TAG          # optional, WFS attribute holding the cell code (default TAG)
+            maxFeatures: 2500          # optional, more cells in view shows a 'zoom in' message (default 2500)
+            minZoom: 0                 # optional, below this zoom level no data is requested (default 0)
+            maxZoom: 18                # optional, above this zoom level no data is requested (default no limit)
+            scale: log                 # optional, colour scale for the counts: log or linear (default log)
+--%>
+<g:set var="gridLayers" value="${(grailsApplication.config.getProperty('map.gridLayers.layers', List, []) ?: []).findAll { it?.facet && it?.wfsLayer }.collect { [
+        id          : (it.id ?: "grid-${it.facet}").toString(),
+        facet       : it.facet.toString(),
+        wfsLayer    : it.wfsLayer.toString(),
+        cellProperty: (it.cellProperty ?: 'TAG').toString(),
+        maxFeatures : (it.maxFeatures ?: 2500) as Integer,
+        minZoom     : (it.minZoom ?: 0) as Integer,
+        maxZoom     : it.maxZoom ? it.maxZoom as Integer : null,
+        scale       : it.scale?.toString()?.toLowerCase() == 'linear' ? 'linear' : 'log'
+] }}"/>
 <div style="margin-bottom: 10px">
     <g:if test="${grailsApplication.config.getProperty('skin.useAlaSpatialPortal', Boolean, false)}">
         <g:set var='spatialPortalLink' value="${sr.urlParameters}"/>
@@ -40,6 +67,9 @@
                     <select name="colourBySelect" id="colourBySelect" onchange="changeFacetColours();return true;">
                         <option value=""><g:message code="map.maplayercontrols.tr01td01.option01" default="Points - default colour"/></option>
                         <option value="grid" ${(defaultColourBy == 'grid')?'selected=\"selected\"':''}><g:message code="map.maplayercontrols.tr01td01.option02" default="Record density grid"/></option>
+                        <g:each var="gridLayer" in="${gridLayers}">
+                            <option value="${gridLayer.id}" ${(defaultColourBy == gridLayer.id)?'selected=\"selected\"':''}><alatag:formatDynamicFacetName fieldName="${gridLayer.facet}"/></option>
+                        </g:each>
                         <option disabled role="separator">————————————</option>
                         <g:each var="group" in="${groupedFacetsRequested}">
                             <g:each var="fieldName" in="${group.value}">
@@ -149,16 +179,26 @@
         });
     }
 
-    var UTM_GRID_MODES = {
-        'utm-grid-1000': {facet: '${grailsApplication.config.getProperty("map.utmGrid.facet1km", String, "cl10531")}', layer: 'ALA:utm1_vl_wgs84', maxFeatures: 15000},
-        'utm-grid-5000': {facet: '${grailsApplication.config.getProperty("map.utmGrid.facet5km", String, "cl200")}', layer: '${grailsApplication.config.getProperty("map.utmGrid.layer5km", String, "ALA:utm5")}', maxFeatures: 2500}
+    // keyed by grid layer id, see the gridLayers comment at the top of this template
+    var GRID_LAYERS = ${raw(groovy.json.JsonOutput.toJson(gridLayers.collectEntries { [(it.id): it] }).replace('</', '<\\/'))};
+
+    var GRID_LAYER_MESSAGES = {
+        loading: '<g:message code="map.gridlayer.loading" default="Loading grid..." encodeAs="JavaScript"/>',
+        zoom: '<g:message code="map.gridlayer.zoom" default="Zoom in to display this grid resolution." encodeAs="JavaScript"/>',
+        zoomOut: '<g:message code="map.gridlayer.zoomout" default="Zoom out to display this grid resolution." encodeAs="JavaScript"/>',
+        scaleLog: '<g:message code="map.gridlayer.scale.log" default="log scale" encodeAs="JavaScript"/>',
+        scaleLinear: '<g:message code="map.gridlayer.scale.linear" default="linear scale" encodeAs="JavaScript"/>',
+        empty: '<g:message code="map.gridlayer.empty" default="No records in this map view." encodeAs="JavaScript"/>',
+        error: '<g:message code="map.gridlayer.error" default="Unable to load grid data." encodeAs="JavaScript"/>',
+        records: '<g:message code="map.gridlayer.records" default="records per cell" encodeAs="JavaScript"/>'
     };
 
     var MAP_VAR = {
         googleApiKey : "${grailsApplication.config.getProperty('google.apikey', String, '')}",
         map : null,
         mappingUrl : "${mappingUrl}", // e.g. "https://biocache.ala.org.au/ws"
-        spatialWfsUrl : window.location.protocol + "//" + window.location.host + "/geoserver/wfs",
+        gridLayerWfsUrl : "${grailsApplication.config.getProperty('map.gridLayers.wfsUrl', String, '').encodeAsJs()}" ||
+            window.location.protocol + "//" + window.location.host + "/geoserver/wfs",
         query : window.__hubDecode("<alatag:b64 value="${searchString}"/>"), // e.g. "?q=*%3A*&lat=-34.266296&lon=145.3838&radius=154.8"
         queryDisplayString : window.__hubDecode("<alatag:b64 value="${queryDisplayString}"/>"), // e.g. "[all records] - within 154.8 km of point(-34.266, 145.384)"
         center: [-23.6,133.6],
@@ -188,7 +228,8 @@
         },
         layerControl : null,
         currentLayers : [],
-        utmGridRequestId : 0,
+        gridLayerRequestId : 0,
+        gridLayerXhr : null,
         additionalFqs : '',
         zoomOutsideScopedRegion: ${(grailsApplication.config.getProperty('map.zoomOutsideScopedRegion', Boolean) == false || grailsApplication.config.getProperty('map.zoomOutsideScopedRegion') == "false") ? false : true},
         removeFqs: ''
@@ -308,16 +349,11 @@
                 popupAutoPan = false;
                 return;
             }
-            var mode = UTM_GRID_MODES[$('#colourBySelect').val()];
-            if (mode && MAP_VAR.currentLayers.length === 1) {
-                setUtmGridLegend('<g:message code="map.utmdensity.loading" default="Loading UTM grid..."/>');
-                loadUtmGridDensity(MAP_VAR.currentLayers[0], mode);
+            var gridLayer = GRID_LAYERS[$('#colourBySelect').val()];
+            if (gridLayer && MAP_VAR.currentLayers.length === 1) {
+                loadGridLayerDensity(MAP_VAR.currentLayers[0], gridLayer);
             }
         });
-    $('<option>').val('utm-grid-1000').text('<g:message code="map.maplayercontrols.utmgrid1km" default="UTM 1 km grid"/>').insertAfter($('#colourBySelect option[value="grid"]'));
-    $('<option>').val('utm-grid-5000').text('<g:message code="map.maplayercontrols.utmgrid5km" default="UTM 5 km grid"/>')
-        .prop('selected', '${defaultColourBy}' === 'utm-grid-5000')
-        .insertAfter($('#colourBySelect option[value="utm-grid-1000"]'));
 
         addQueryLayer(true);
 
@@ -426,7 +462,9 @@
             tooltip: 'hide'
         }).on('slideStop', function(ev){
             $('#sizeslider-val').html(ev.value);
-            addQueryLayer(true);
+            if (!GRID_LAYERS[$('#colourBySelect').val()]) { // point size has no effect on grid layers
+                addQueryLayer(true);
+            }
         });
 
         $( "#opacityslider" ).slider({
@@ -451,7 +489,9 @@
         });
 
         $('#outlineDots').click(function(e) {
-            addQueryLayer(true);
+            if (!GRID_LAYERS[$('#colourBySelect').val()]) { // outline has no effect on grid layers
+                addQueryLayer(true);
+            }
         });
 
         fitMapToBounds(); // zoom map if points are contained within Australia
@@ -576,13 +616,13 @@
         MAP_VAR.currentLayers = [];
 
         var colourByFacet = $('#colourBySelect').val();
-        var utmGridMode = UTM_GRID_MODES[colourByFacet];
+        var gridLayer = GRID_LAYERS[colourByFacet];
         var pointSize = $('#sizeslider-val').html();
         var opacity = $('#opacityslider-val').html();
         var outlineDots = $('#outlineDots').is(':checked');
 
-        if (!utmGridMode) {
-            MAP_VAR.utmGridRequestId++;
+        if (!gridLayer) {
+            cancelGridLayerRequests();
         }
 
         var envProperty = "color:${grailsApplication.config.getProperty('map.pointColour')};name:circle;size:"+pointSize+";opacity:"+opacity
@@ -601,7 +641,7 @@
         }
 
         var layer;
-        if (utmGridMode) {
+        if (gridLayer) {
             layer = L.geoJson(null);
         } else {
             layer = L.tileLayer.wms(MAP_VAR.mappingUrl + "/mapping/wms/reflect" + MAP_VAR.query + MAP_VAR.additionalFqs, {
@@ -618,8 +658,8 @@
             });
         }
 
-        if (redraw && utmGridMode) {
-            setUtmGridLegend('<g:message code="map.utmdensity.loading" default="Loading UTM grid..."/>');
+        if (gridLayer) {
+            // legend is set by loadGridLayerDensity
         } else if(redraw){
              if(!colourByFacet){
                 $('.legendTable').html('');
@@ -678,8 +718,8 @@
         }
         MAP_VAR.currentLayers.push(layer);
 
-        if (utmGridMode) {
-            loadUtmGridDensity(layer, utmGridMode);
+        if (gridLayer) {
+            loadGridLayerDensity(layer, gridLayer);
         }
 
         for (let key in MAP_VAR.overlays) {
@@ -718,47 +758,112 @@
         );
     }
 
-    function setUtmGridLegend(message, modeLabel, minCount, maxCount) {
+    var GRID_LAYER_COLOURS = ['#fff7bc', '#fec44f', '#fe9929', '#ec7014', '#cc4c02', '#8c2d04'];
+
+    function setGridLayerLegend(message, layerLabel, minCount, maxCount, scale) {
         var $legend = $('.legendTable').empty();
         if (message) {
             $legend.append($('<tr>').append($('<td>').text(message)));
             return;
         }
 
-        var recordsLabel = '<g:message code="map.utmdensity.records" default="records per cell"/>';
-        $legend.append($('<tr>').append($('<td>').text(modeLabel + ' - ' + recordsLabel)));
-        var $scale = $('<div>').css({
-            height: '12px',
-            background: 'linear-gradient(to right, #fff7bc, #fec44f, #fe9929, #ec7014, #cc4c02, #8c2d04)'
+        var scaleLabel = scale === 'linear' ? GRID_LAYER_MESSAGES.scaleLinear : GRID_LAYER_MESSAGES.scaleLog;
+        $legend.append($('<tr>').append($('<td>').text(layerLabel + ' - ' + GRID_LAYER_MESSAGES.records + ' (' + scaleLabel + ')')));
+        gridLayerClassBreaks(minCount, maxCount, scale).forEach(function(gridClass) {
+            var range = gridClass.from === gridClass.to ? gridClass.from.toLocaleString() :
+                gridClass.from.toLocaleString() + ' - ' + gridClass.to.toLocaleString();
+            $legend.append($('<tr>').append($('<td>')
+                .append($('<i>').addClass('legendColour').css('background-color', gridClass.colour))
+                .append($('<span>').addClass('legendItemName').text(range))));
         });
-        $legend.append($('<tr>').append($('<td>').append($scale)));
-        $legend.append($('<tr>').append($('<td>').text(minCount.toLocaleString() + ' - ' + maxCount.toLocaleString())));
     }
 
-    function buildUtmCellFilterUrl(mode, cellCode) {
+    /**
+     * The count range of each colour class, derived from gridLayerColourIndex so the legend always matches the map.
+     * Classes that contain no whole counts are left out.
+     */
+    function gridLayerClassBreaks(minCount, maxCount, scale) {
+        if (maxCount === minCount) {
+            return [{colour: GRID_LAYER_COLOURS[GRID_LAYER_COLOURS.length - 1], from: minCount, to: maxCount}];
+        }
+        var lowerBounds = GRID_LAYER_COLOURS.map(function(colour, index) {
+            var fraction = index / GRID_LAYER_COLOURS.length;
+            var threshold = scale === 'linear' ?
+                minCount + fraction * (maxCount - minCount) :
+                Math.exp(Math.log(minCount) + fraction * (Math.log(maxCount) - Math.log(minCount)));
+            // correct for floating point rounding around the threshold
+            var lower = Math.max(minCount, Math.ceil(threshold));
+            while (lower > minCount && gridLayerColourIndex(lower - 1, minCount, maxCount, scale) >= index) lower--;
+            while (lower <= maxCount && gridLayerColourIndex(lower, minCount, maxCount, scale) < index) lower++;
+            return lower;
+        });
+        return GRID_LAYER_COLOURS.map(function(colour, index) {
+            var to = index + 1 < lowerBounds.length ? lowerBounds[index + 1] - 1 : maxCount;
+            return {colour: colour, from: lowerBounds[index], to: Math.min(to, maxCount)};
+        }).filter(function(gridClass) {
+            return gridClass.from <= gridClass.to;
+        });
+    }
+
+    function buildGridCellFilterUrl(gridLayer, cellCode) {
         var queryParams = new URLSearchParams((MAP_VAR.query || '?q=*:*').replace(/^\?/, ''));
         var existingFilters = queryParams.getAll('fq').filter(function(filter) {
-            return filter.trim().replace(/^-/, '').indexOf(mode.facet + ':') !== 0;
+            return filter.trim().replace(/^-/, '').indexOf(gridLayer.facet + ':') !== 0;
         });
         queryParams.delete('fq');
         existingFilters.forEach(function(filter) {
             queryParams.append('fq', filter);
         });
-        queryParams.append('fq', mode.facet + ':"' + cellCode + '"');
+        queryParams.append('fq', gridLayer.facet + ':"' + cellCode + '"');
 
         return window.location.pathname + '?' + queryParams.toString() + window.location.hash;
     }
 
-    function loadUtmGridDensity(layer, mode) {
-        var requestId = ++MAP_VAR.utmGridRequestId;
-        var bounds = MAP_VAR.map.getBounds();
-        var west = bounds.getWest();
-        var south = bounds.getSouth();
-        var east = bounds.getEast();
-        var north = bounds.getNorth();
+    /**
+     * Invalidate and abort any in-flight grid layer request, so late responses are ignored.
+     */
+    function cancelGridLayerRequests() {
+        MAP_VAR.gridLayerRequestId++;
+        if (MAP_VAR.gridLayerXhr) {
+            MAP_VAR.gridLayerXhr.abort();
+            MAP_VAR.gridLayerXhr = null;
+        }
+    }
+
+    /**
+     * Colour index for a count. The default log scale suits the usually heavily skewed record counts per cell,
+     * scale 'linear' spreads the colours evenly between the minimum and maximum count.
+     */
+    function gridLayerColourIndex(count, minCount, maxCount, scale) {
+        if (maxCount === minCount) {
+            return GRID_LAYER_COLOURS.length - 1;
+        }
+        var fraction = scale === 'linear' ?
+            (count - minCount) / (maxCount - minCount) :
+            (Math.log(count) - Math.log(minCount)) / (Math.log(maxCount) - Math.log(minCount));
+        return Math.min(GRID_LAYER_COLOURS.length - 1, Math.floor(fraction * GRID_LAYER_COLOURS.length));
+    }
+
+    function loadGridLayerDensity(layer, gridLayer) {
+        cancelGridLayerRequests();
+        var requestId = MAP_VAR.gridLayerRequestId;
         layer.clearLayers();
+
+        var zoom = MAP_VAR.map.getZoom();
+        if (zoom < (gridLayer.minZoom || 0)) {
+            setGridLayerLegend(GRID_LAYER_MESSAGES.zoom);
+            return;
+        }
+        if (gridLayer.maxZoom != null && zoom > gridLayer.maxZoom) {
+            setGridLayerLegend(GRID_LAYER_MESSAGES.zoomOut);
+            return;
+        }
+        setGridLayerLegend(GRID_LAYER_MESSAGES.loading);
+
+        var cellProperty = gridLayer.cellProperty || 'TAG';
+        var bounds = MAP_VAR.map.getBounds();
         var queryParams = new URLSearchParams((MAP_VAR.query || '?q=*:*').replace(/^\?/, ''));
-        queryParams.set('facets', mode.facet);
+        queryParams.set('facets', gridLayer.facet);
         queryParams.set('flimit', '-1');
         queryParams.set('pageSize', '0');
         if (MAP_VAR.removeFqs) {
@@ -771,35 +876,43 @@
             service: 'WFS',
             version: '1.0.0',
             request: 'GetFeature',
-            typeName: mode.layer,
+            typeName: gridLayer.wfsLayer,
             outputFormat: 'application/json',
             srsName: 'EPSG:4326',
-            bbox: [west, south, east, north, 'EPSG:4326'].join(','),
-            maxFeatures: mode.maxFeatures + 1
+            bbox: [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth(), 'EPSG:4326'].join(','),
+            maxFeatures: gridLayer.maxFeatures + 1
         };
 
-        $.ajax({url: MAP_VAR.spatialWfsUrl, data: wfsData, dataType: 'json'}).then(function(featureData) {
-            if (requestId !== MAP_VAR.utmGridRequestId) return;
+        function cellCode(feature) {
+            return feature.properties ? feature.properties[cellProperty] : undefined;
+        }
+
+        MAP_VAR.gridLayerXhr = $.ajax({url: MAP_VAR.gridLayerWfsUrl, data: wfsData, dataType: 'json'});
+        MAP_VAR.gridLayerXhr.then(function(featureData) {
+            if (requestId !== MAP_VAR.gridLayerRequestId) return;
 
             var totalFeatures = Number(featureData.totalFeatures || featureData.numberMatched || featureData.features.length);
-            if (featureData.features.length > mode.maxFeatures || totalFeatures > mode.maxFeatures) {
-                setUtmGridLegend('<g:message code="map.utmdensity.zoom" default="Zoom in to display this grid resolution."/>');
+            if (featureData.features.length > gridLayer.maxFeatures || totalFeatures > gridLayer.maxFeatures) {
+                setGridLayerLegend(GRID_LAYER_MESSAGES.zoom);
                 return;
             }
             if (!featureData.features.length) {
-                setUtmGridLegend('<g:message code="map.utmdensity.empty" default="No records in this map view."/>');
+                setGridLayerLegend(GRID_LAYER_MESSAGES.empty);
                 return;
             }
 
+            // restrict the count query to the extent of the returned cells, which covers edge cells completely
             var cellBounds = L.geoJson(featureData).getBounds();
             queryParams.append('fq', 'decimalLatitude:[' + cellBounds.getSouth() + ' TO ' + cellBounds.getNorth() + ']');
             queryParams.append('fq', 'decimalLongitude:[' + cellBounds.getWest() + ' TO ' + cellBounds.getEast() + ']');
 
-            return $.ajax({url: serviceUrl + '/occurrences/search.json?' + queryParams.toString(), dataType: 'json'}).then(function(searchData) {
-                if (requestId !== MAP_VAR.utmGridRequestId) return;
+            MAP_VAR.gridLayerXhr = $.ajax({url: serviceUrl + '/occurrences/search.json?' + queryParams.toString(), dataType: 'json'});
+            return MAP_VAR.gridLayerXhr.then(function(searchData) {
+                if (requestId !== MAP_VAR.gridLayerRequestId) return;
+                MAP_VAR.gridLayerXhr = null;
 
                 var facetResult = (searchData.facetResults || []).filter(function(result) {
-                    return result.fieldName === mode.facet;
+                    return result.fieldName === gridLayer.facet;
                 })[0];
                 var counts = {};
                 (facetResult ? facetResult.fieldResult : []).forEach(function(result) {
@@ -807,45 +920,40 @@
                 });
 
                 var visibleFeatures = featureData.features.filter(function(feature) {
-                    return feature.properties && counts[feature.properties.TAG] > 0;
+                    return counts[cellCode(feature)] > 0;
                 });
                 if (!visibleFeatures.length) {
-                    setUtmGridLegend('<g:message code="map.utmdensity.empty" default="No records in this map view."/>');
+                    setGridLayerLegend(GRID_LAYER_MESSAGES.empty);
                     return;
                 }
 
-                var maxCount = Math.max.apply(null, visibleFeatures.map(function(feature) {
-                    return counts[feature.properties.TAG];
-                }));
-                var minCount = Math.min.apply(null, visibleFeatures.map(function(feature) {
-                    return counts[feature.properties.TAG];
-                }));
-                var colors = ['#fff7bc', '#fec44f', '#fe9929', '#ec7014', '#cc4c02', '#8c2d04'];
-                var recordsLabel = '<g:message code="map.utmdensity.records" default="records per cell"/>';
+                var visibleCounts = visibleFeatures.map(function(feature) {
+                    return counts[cellCode(feature)];
+                });
+                var maxCount = Math.max.apply(null, visibleCounts);
+                var minCount = Math.min.apply(null, visibleCounts);
 
                 layer.addData({type: 'FeatureCollection', features: visibleFeatures});
                 var opacity = parseFloat($('#opacityslider-val').text());
                 layer.setStyle(function(feature) {
-                    var fraction = maxCount === minCount ? 1 :
-                        (counts[feature.properties.TAG] - minCount) / (maxCount - minCount);
-                    var colorIndex = Math.min(colors.length - 1, Math.floor(fraction * colors.length));
-                    return {color: '#555', weight: 0.6, fillColor: colors[colorIndex], fillOpacity: opacity};
+                    var colourIndex = gridLayerColourIndex(counts[cellCode(feature)], minCount, maxCount, gridLayer.scale);
+                    return {color: '#555', weight: 0.6, fillColor: GRID_LAYER_COLOURS[colourIndex], fillOpacity: opacity};
                 });
                 layer.eachLayer(function(cellLayer) {
-                    var cellCode = cellLayer.feature.properties.TAG;
-                    var recordsLink = $('<a>').attr('href', buildUtmCellFilterUrl(mode, cellCode))
-                        .text(counts[cellCode].toLocaleString() + ' ' + recordsLabel);
-                    var popup = $('<div>').append($('<strong>').text(cellCode)).append('<br>')
+                    var code = cellCode(cellLayer.feature);
+                    var recordsLink = $('<a>').attr('href', buildGridCellFilterUrl(gridLayer, code))
+                        .text(counts[code].toLocaleString() + ' ' + GRID_LAYER_MESSAGES.records);
+                    var popup = $('<div>').append($('<strong>').text(code)).append('<br>')
                         .append(recordsLink);
                     cellLayer.bindPopup(popup[0]);
                 });
 
-                var modeLabel = $('#colourBySelect option:selected').text();
-                setUtmGridLegend(null, modeLabel, minCount, maxCount);
+                setGridLayerLegend(null, $('#colourBySelect option:selected').text().trim(), minCount, maxCount, gridLayer.scale);
             });
         }).fail(function() {
-            if (requestId === MAP_VAR.utmGridRequestId) {
-                setUtmGridLegend('<g:message code="map.utmdensity.error" default="Unable to load UTM grid data."/>');
+            if (requestId === MAP_VAR.gridLayerRequestId) {
+                MAP_VAR.gridLayerXhr = null;
+                setGridLayerLegend(GRID_LAYER_MESSAGES.error);
             }
         });
     }
