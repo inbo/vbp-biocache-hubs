@@ -23,39 +23,38 @@
   overflow: hidden;      /* critical */
 }
 
-/* Styles for the taxon image and overlay text */
+/* Styles for the taxon image and attribution */
 
 .image-wrapper {
   height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
 #taxonImageContainer {
-  position: relative;
-  height: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 #taxonImage {
-  width: 100%;
+  display: block;
+  width: auto;
   height: 100%;
+  max-width: 100%;
+  max-height: 100%;
   object-fit: contain;
-  /*display: block;*/
 }
 
-/* overlay text */
-#taxonImageOverlay {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  background: rgba(0, 0, 0, 0.65);
-  color: #fff;
-  padding: 4px 8px;
-  font-size: 12px;
-  border-radius: 4px;
-  display: none; /* shown only for generic warning */
-  opacity: 0.4;
-  max-width: 70%;          /* prevents overflow */
-  white-space: normal;    /* allow wrapping */
-  word-break: break-word; /* break long words if needed */
+.image-attribution {
+  display: none;
+  flex: 0 0 auto;
+}
+
+#taxonImageWarning {
+  display: block;
 }
 
 /* no-image / error message */

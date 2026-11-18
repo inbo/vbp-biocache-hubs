@@ -349,15 +349,28 @@
                             <div id="occurrenceImages" class="image-wrapper">
                                 <div id="taxonImageContainer">
                                     <img id="taxonImage" alt="Taxon image"/>
-                                    <!-- overlay text -->
-                                    <div id="taxonImageOverlay"></div>
+                                </div>
+                                <div id="taxonImageAttribution" class="image-attribution">
+                                    <span id="taxonImageWarning"></span>
+                                    <a id="taxonImageLink" href="#" target="_blank" rel="noopener noreferrer">
+                                        <g:message code='show.image.view' default='View photo'/>
+                                    </a>
+                                    <span id="taxonImageCreator" hidden>
+                                        <g:message code="show.sidebar03.cite01" default="Photographer"/>:
+                                        <span id="taxonImageCreatorValue"></span>
+                                    </span>
+                                    <span id="taxonImageLicence" hidden>
+                                        <g:message code="show.image.licence" default="Licence"/>:
+                                        <a id="taxonImageLicenceValue" target="_blank" rel="noopener noreferrer"></a>
+                                    </span>
                                 </div>
                                 <!-- fallback message -->
                                 <div id="taxonImageMessage" class="image-message"></div>
                                 <div id="taxonImageText"
                                      data-no-image="<g:message code='show.image.no.image' default='No image found'/>"
                                      data-load-error="<g:message code='show.image.load.error' default='Error while loading image'/>"
-                                     data-generic-warning="<g:message code='show.image.generic.warning' default='Warning: Generic image of the species'/>">
+                                     data-generic-warning="<g:message code='show.image.generic.warning' default='Representative species image (not part of this observation)'/>"
+                                     data-image-viewer-url="${grailsApplication.config.getProperty('images.viewerUrl', String, '')}">
                                 </div>
                             </div>
 
