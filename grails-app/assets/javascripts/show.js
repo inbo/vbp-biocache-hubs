@@ -1209,11 +1209,41 @@ function sendEmail(strEncoded) {
     return false;
 }
 
+function renderTaxonImageLicence(licence) {
+    const $licence = $("#taxonImageLicence");
+    const $value = $("#taxonImageLicenceValue");
+    const text = typeof licence === "string" ? licence.trim() : "";
+    $value.text(text).removeAttr("href");
+    $licence.prop("hidden", !text);
+    if (!text) {
+        return;
+    }
+
+    let url;
+    try {
+        url = new URL(text);
+    } catch (error) {
+        return; // Licence metadata may be plain text rather than a URL.
+    }
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+        return;
+    }
+    $value.attr("href", url.href);
+    if (url.hostname === "creativecommons.org") {
+        const match = url.pathname.match(/^\/licenses\/(by(?:-nc)?(?:-sa|-nd)?)\/(\d+\.\d+)\/?$/i);
+        if (match) {
+            $value.text("CC " + match[1].toUpperCase() + " " + match[2]);
+        }
+    }
+}
+
 function renderTaxonImage() {
 
     const $image = $("#taxonImage");
     const $container = $("#taxonImageContainer");
-    const $overlay = $("#taxonImageOverlay");
+    const $attribution = $("#taxonImageAttribution");
+    const $warning = $("#taxonImageWarning");
+    const $imageLink = $("#taxonImageLink");
     const $message = $("#taxonImageMessage");
     const $textHolder = $("#taxonImageText");
 
@@ -1224,19 +1254,22 @@ function renderTaxonImage() {
     const noImageText = $textHolder.data("no-image");
     const loadErrorText = $textHolder.data("load-error");
     const genericWarningText = $textHolder.data("generic-warning");
+    const imageViewerUrl = $textHolder.data("image-viewer-url");
+
+    $attribution.hide();
+    $imageLink.hide().removeAttr("href");
 
     // Attach handlers BEFORE setting src
     $image
     .on("load", function () {
         $container.show();
         $message.text("");
-        $overlay
-        .text(genericWarningText)
-        .show();
+        $warning.text(genericWarningText);
+        $attribution.show();
     })
     .on("error", function () {
         $container.hide();
-        $overlay.hide();
+        $attribution.hide();
         $message.text(loadErrorText);
     });
 
@@ -1251,16 +1284,25 @@ function renderTaxonImage() {
     })
     .done(function (data) {
         if (data && data.url) {
+            const creator = typeof data.creator === "string" ? data.creator.trim() : "";
+            $("#taxonImageCreatorValue").text(creator);
+            $("#taxonImageCreator").prop("hidden", !creator);
+            renderTaxonImageLicence(data.license);
+            if (data.imageIdentifier && imageViewerUrl) {
+                $imageLink
+                    .attr("href", imageViewerUrl + encodeURIComponent(data.imageIdentifier))
+                    .show();
+            }
             $image.attr("src", data.url);
         } else {
             $container.hide();
-            $overlay.hide();
+            $attribution.hide();
             $message.text(noImageText);
         }
     })
     .fail(function () {
         $container.hide();
-        $overlay.hide();
+        $attribution.hide();
         $message.text(loadErrorText);
     });
 }

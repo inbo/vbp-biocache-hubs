@@ -770,13 +770,16 @@ class WebServicesService {
             }
         }
 
-    def getThumbnailImageURL(String taxonConceptId) {
+    def getThumbnailImageDetails(String taxonConceptId) {
         def url = grailsApplication.config.getProperty('bieService.baseUrl') + "/species/" + taxonConceptId
         JSONObject responseJson = getJsonElements(url)
         if (responseJson) {
             String imageIdentifier = responseJson.imageIdentifier
             if (imageIdentifier) {
-                return grailsApplication.config.getProperty('images.baseUrl') + "/image/" + imageIdentifier + "/thumbnail"
+                return [
+                        url: grailsApplication.config.getProperty('images.baseUrl') + "/image/" + imageIdentifier + "/thumbnail",
+                        imageIdentifier: imageIdentifier
+                ]
             }
         }
         return null

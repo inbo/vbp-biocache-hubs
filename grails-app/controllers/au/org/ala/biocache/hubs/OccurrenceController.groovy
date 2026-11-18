@@ -24,6 +24,7 @@ import org.grails.web.json.JSONArray
 import org.grails.web.json.JSONElement
 import org.grails.web.json.JSONObject
 import org.springframework.beans.factory.annotation.Value
+import org.springframework.web.client.RestClientException
 
 import javax.servlet.http.HttpServletRequest
 import java.text.SimpleDateFormat
@@ -762,9 +763,22 @@ class OccurrenceController {
     }
 
     def thumbnailImageURL(String taxonConceptID){
-        def thumbnailImageUrl = webServicesService.getThumbnailImageURL(taxonConceptID)
-        def result = [:]
-        result.url = thumbnailImageUrl
+        def result = webServicesService.getThumbnailImageDetails(taxonConceptID) ?: [url: null]
+        if (result.imageIdentifier) {
+            try {
+                def metadata = webServicesService.getImageMetadata(result.imageIdentifier)
+                def creator = metadata?.creator
+                if (creator instanceof String && creator.trim()) {
+                    result.creator = creator.trim()
+                }
+                def license = metadata?.license
+                if (license instanceof String && license.trim()) {
+                    result.license = license.trim()
+                }
+            } catch (RestClientException ex) {
+                log.warn("Could not retrieve metadata for representative image ${result.imageIdentifier}", ex)
+            }
+        }
         render result as JSON
     }
 }
