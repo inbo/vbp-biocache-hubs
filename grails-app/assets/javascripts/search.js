@@ -117,6 +117,12 @@ function init() {
   });
 
   var storedSearchTab = amplify.store("search-tab-state");
+  if (
+    typeof storedSearchTab !== "string" ||
+    !/^[A-Za-z0-9_-]+$/.test(storedSearchTab)
+  ) {
+    storedSearchTab = null;
+  }
 
   // work-around for intitialIndex & history being mutually exclusive
   if (!storedSearchTab && BC_CONF.defaultListView && !window.location.hash) {
@@ -124,10 +130,11 @@ function init() {
   }
 
   // catch hash URIs and trigger tabs
-  if (location.hash !== "") {
-    $('.nav-tabs a[href="' + location.hash.replace("tab_", "") + '"]').tab(
-      "show",
-    );
+  let rawHash = location.hash || "";
+  let hashMatch = rawHash.match(/^#(?:tab_)?([A-Za-z0-9_-]+)$/);
+  if (hashMatch) {
+    let target = "#" + hashMatch[1];
+    $('.nav-tabs a[href="' + target + '"]').tab("show");
   } else if (storedSearchTab) {
     $('.nav-tabs a[href="#' + storedSearchTab + '"]').tab("show");
   } else {
@@ -135,9 +142,9 @@ function init() {
   }
 
   // remove *:* query from search bar
-  //var q = $.url().param('q');
-  var q = $.url().param("q");
-  if (q && q[0] == "*:*") {
+  //var q = getUrlParam('q');
+  var q = getUrlParam("q");
+  if (q && q == "*:*") {
     $(":input#solrQuery").val("");
   }
 
@@ -204,7 +211,7 @@ function init() {
     ) {
       // save facets to the user_facets cookie as string
       $.cookie.json = false;
-      $.cookie("user_facets", selectedFacets, { expires: 7 });
+      $.cookie("user_facets", selectedFacets, { expires: 365 });
       // reload page
       document.location.reload(true);
     } else if (selectedFacets.length > BC_CONF.maxFacets) {
@@ -229,6 +236,9 @@ function init() {
   // load stored prefs from cookie
   var userFacets = $.cookie("user_facets");
   if (userFacets) {
+    // re-set the same value to extend expiry to another year
+    $.cookie("user_facets", userFacets, { expires: 365 });
+
     $(":input.facetOpts").removeAttr("checked");
     var facetList = userFacets.split(",");
     for (i in facetList) {
@@ -274,7 +284,9 @@ function init() {
         queryContextParam;
 
       var $clone = $("#resultsReturned #template").clone();
-      $clone.attr("id", ""); // remove the ID
+      let thisId = "resultsReturnedTemplate_" + i;
+      $clone.attr("id", thisId); // set id for later use
+      $clone.find(".dropdown-menu").attr("id", "dropdown_" + thisId);
       $clone.find(".taxaMenuContent").addClass("stopProp");
       // add unique IDs to some elements
       $clone.find("form.raw_taxon_search").attr("id", "rawTaxonSearch_" + i);
@@ -348,9 +360,109 @@ function init() {
           .click(function(e) {
             e.stopPropagation();
           });
+
+        $(el).html($clone);
       });
 
-      $(el).html($clone);
+      // Move dropdown to body when shown and restore when hidden
+      $clone.on("shown.bs.dropdown", function () {
+        var $btnGroup = $(this);
+        var $dropdownMenu = $btnGroup.find(".dropdown-menu");
+
+        // Store original parent and position info
+        $dropdownMenu.data("original-parent", $btnGroup);
+        $dropdownMenu.data("btn-group", $btnGroup);
+
+        // Calculate and set position
+        var offset = $btnGroup.offset();
+        var height = $btnGroup.outerHeight();
+
+        // Move to body and position absolutely
+        $dropdownMenu.appendTo("body").css({
+          position: "absolute",
+          top: offset.top + height,
+          left: offset.left,
+          display: "block",
+          zIndex: 1050,
+        });
+
+        // Update position on window resize/scroll
+        var repositionDropdown = function () {
+          if ($btnGroup.hasClass("open")) {
+            var newOffset = $btnGroup.offset();
+            var newHeight = $btnGroup.outerHeight();
+            $dropdownMenu.css({
+              top: newOffset.top + newHeight,
+              left: newOffset.left,
+            });
+          }
+        };
+
+        $(window).on("resize.dropdown scroll.dropdown", repositionDropdown);
+        $dropdownMenu.data("reposition-handler", repositionDropdown);
+
+        // Handle click outside to close dropdown
+        var closeDropdown = function (e) {
+          var $target = $(e.target);
+          // Check if click is outside both the dropdown menu and the button group
+          if (
+            !$target.closest($dropdownMenu).length &&
+            !$target.closest($btnGroup).length
+          ) {
+            $btnGroup.removeClass("open");
+            $btnGroup.trigger("hide.bs.dropdown");
+          }
+        };
+
+        // Use timeout to avoid immediate triggering from the same click that opened it
+        setTimeout(function () {
+          $(document).on("click.dropdown-outside", closeDropdown);
+        }, 10);
+
+        $dropdownMenu.data("close-handler", closeDropdown);
+      });
+
+      // Handle cleanup when dropdown is closed
+      $clone.on("hide.bs.dropdown", function () {
+        console.log("Dropdown hide event triggered");
+        let thisId = $(this).attr("id");
+        var $dropdownMenu = $("#dropdown_" + thisId);
+        var $originalParent = $dropdownMenu.data("original-parent");
+        var repositionHandler = $dropdownMenu.data("reposition-handler");
+        var closeHandler = $dropdownMenu.data("close-handler");
+
+        // Remove all event handlers
+        if (repositionHandler) {
+          $(window).off("resize.dropdown scroll.dropdown", repositionHandler);
+        }
+        if (closeHandler) {
+          $(document).off("click.dropdown-outside", closeHandler);
+        }
+
+        if ($originalParent && $dropdownMenu.parent().is("body")) {
+          // Move dropdown back to original parent and reset styles
+          $dropdownMenu.appendTo($originalParent).attr("style", "");
+          $dropdownMenu.removeData(
+            "original-parent btn-group reposition-handler close-handler",
+          );
+        }
+      });
+
+      // Ensure toggle button properly triggers Bootstrap dropdown
+      $clone.find(".dropdown-toggle").on("click", function (e) {
+        console.log("Dropdown toggle clicked");
+        e.preventDefault();
+        e.stopPropagation();
+        var $btnGroup = $(this).closest(".btn-group");
+
+        if ($btnGroup.hasClass("open")) {
+          $btnGroup.removeClass("open");
+          $btnGroup.trigger("hide.bs.dropdown");
+        } else {
+          $btnGroup.addClass("open");
+          $btnGroup.trigger("shown.bs.dropdown");
+        }
+      });
     });
 
   // form validation for raw_taxon_name popup div with checkboxes
@@ -736,7 +848,7 @@ function init() {
     // profile in URL may be invalid, replace it with the actual profile being used
     url = replaceInvalidProfile(
       url,
-      $.url().param("qualityProfile"),
+      getUrlParam("qualityProfile"),
       $(this).attr("data-profile"),
     );
 
@@ -958,29 +1070,16 @@ function init() {
     // 2. remove disable all from URL
     url = removeFromURL(url, "disableAllQualityFilters=", false);
     // 3. remove disableQualityFilter from URL
-    var disabledQualityFilters = $.url().param("disableQualityFilter");
-    if (disabledQualityFilters !== undefined) {
-      // if only 1 category disabled
-      if (typeof disabledQualityFilters === "string") {
-        url = removeFromURL(url, "disableQualityFilter=", false);
-      } else {
-        for (var i = 0; i < disabledQualityFilters.length; i++) {
-          url = removeFromURL(url, "disableQualityFilter=", false);
-        }
-      }
+    var disabledQualityFilters = getUrlParamAll("disableQualityFilter");
+    for (var i = 0; i < disabledQualityFilters.length; i++) {
+      url = removeFromURL(url, "disableQualityFilter=", false);
     }
 
     // fqs contains current fqs in url, it could be expanded or user specified
-    var fqList = $.url().param("fq");
+    var fqList = getUrlParamAll("fq");
     var fqs = [];
-    if (fqList !== undefined) {
-      if (typeof fqList === "object") {
-        for (var i = 0; i < fqList.length; i++) {
-          fqs.push(fqList[i]);
-        }
-      } else if (typeof fqList === "string") {
-        fqs.push(fqList);
-      }
+    for (var i = 0; i < fqList.length; i++) {
+      fqs.push(fqList[i]);
     }
 
     // 4. remove fqs from URL
@@ -1103,6 +1202,43 @@ function init() {
     getExcludedCounts();
   });
 
+  // Query display toggle functionality
+  var $queryContainer = $("#queryDisplayContainer");
+  var $queryText = $("#queryDisplayText");
+  var $queryToggle = $("#queryDisplayToggle");
+
+  // Check if text is truncated on page load
+  if (
+    $queryText.length > 0 &&
+    $queryText[0].scrollHeight > $queryText[0].clientHeight
+  ) {
+    $queryToggle.show();
+  }
+
+  // Handle toggle click
+  $queryToggle.on("click", function (e) {
+    e.preventDefault();
+    var $icon = $(this).find("i");
+    var $toggleText = $(this).find(".toggle-text");
+
+    if ($queryText.hasClass("query-text-truncated")) {
+      $queryText
+        .removeClass("query-text-truncated")
+        .addClass("query-text-expanded");
+      $icon.removeClass("fa-caret-right").addClass("fa-caret-up");
+      $toggleText.text("Show less");
+    } else {
+      $queryText
+        .removeClass("query-text-expanded")
+        .addClass("query-text-truncated");
+      $icon.removeClass("fa-caret-up").addClass("fa-caret-right");
+      $toggleText.text("Show more");
+
+      // scroll back to the top of the query text when collapsing
+      $queryContainer.animate({ scrollTop: 0 }, "fast");
+    }
+  });
+
   // when dlg pops, load and init status, set checkall status
   $(".multipleFiltersLink").click(function() {
     var filterStatus = $("form#filterRefineForm").find(":input.filters");
@@ -1173,24 +1309,16 @@ function init() {
   function ifExpanded(categoryName, filters) {
     // get all disabled categories from the url
     var disableQualityFilterSet = new Set();
-    var disabledFilter = $.url().param("disableQualityFilter");
-    if (typeof disabledFilter === "object") {
-      disableQualityFilterSet = new Set(disabledFilter);
-    } else if (typeof disabledFilter === "string") {
-      disableQualityFilterSet.add(disabledFilter);
-    }
+    var disabledFilter = getUrlParamAll("disableQualityFilter");
+    disableQualityFilterSet = new Set(disabledFilter);
 
     // if not disabled it can't be expanded
     if (!disableQualityFilterSet.has(categoryName)) return false;
 
     var fqSet = new Set();
 
-    var fqs = $.url().param("fq");
-    if (typeof fqs === "object") {
-      fqSet = new Set(fqs);
-    } else if (typeof fqs === "string") {
-      fqSet.add(fqs);
-    }
+    var fqs = getUrlParamAll("fq");
+    fqSet = new Set(fqs);
 
     var len = filters.length;
     if (len > 0 && filters.startsWith("[") && filters.endsWith("]")) {
@@ -1269,12 +1397,8 @@ function init() {
     // get all disabled categories from the url
     // we don't care disableall param
     var disableQualityFilterSet = new Set();
-    var disabledFilter = $.url().param("disableQualityFilter");
-    if (typeof disabledFilter === "object") {
-      disableQualityFilterSet = new Set(disabledFilter);
-    } else if (typeof disabledFilter === "string") {
-      disableQualityFilterSet.add(disabledFilter);
-    }
+    var disabledFilter = getUrlParamAll("disableQualityFilter");
+    disableQualityFilterSet = new Set(disabledFilter);
 
     // get current url
     var url = $(location).attr("href");
@@ -1330,7 +1454,7 @@ function init() {
     // profile in URL may be invalid, replace it with the actual profile being used
     url = replaceInvalidProfile(
       url,
-      $.url().param("qualityProfile"),
+      getUrlParam("qualityProfile"),
       filterForm.attr("data-profile"),
     );
 
@@ -1585,7 +1709,7 @@ function init() {
   var alertsUrlPrefix = BC_CONF.alertsUrl || "https://alerts.ala.org.au";
   $("a#alertNewRecords, a#alertNewAnnotations").click(function(e) {
     e.preventDefault();
-    var query = $("<p>" + BC_CONF.queryString + "</p>").text(); // strips <span> from string
+    var query = $("<p>").text(BC_CONF.queryString).text(); // strips tags from string safely
     var fqArray = decodeURIComponent(BC_CONF.facetQueries)
       .split("&fq=")
       .filter(function(e) {
@@ -1655,7 +1779,10 @@ function init() {
   });
 
   // store last search in local storage for a "back button" on record pages
-  amplify.store("lastSearch", $.url().attr("relative"));
+  amplify.store(
+    "lastSearch",
+    window.location.pathname + window.location.search + window.location.hash,
+  );
 
   // mouse over affect on thumbnail images
   $("#recordImages").on("hover", ".imgCon", function() {
@@ -1684,8 +1811,19 @@ function init() {
     $("#imageDialog").modal("show");
   });
 
+  $("#imageDialog").on("show.bs.modal", function () {
+    if (window.L_imagesClient) {
+      window.L_mainMap = window.L;
+      window.L = window.L_imagesClient;
+    }
+  });
+
   // show image only after modal dialog is shown. otherwise, image position will be off the viewing area.
-  $("#imageDialog").on("shown.bs.modal", function() {
+  $("#imageDialog").on("shown.bs.modal", function () {
+    if (window.L_imagesClient) {
+      window.L = window.L_imagesClient;
+    }
+
     if ($("#viewerContainerId").width() == 0) {
       //this is a workaround for #viewContainerId having width of zero, which results in the
       //image not rendering
@@ -1724,6 +1862,12 @@ function init() {
         getPreferredSpeciesListUrl: BC_CONF.getPreferredSpeciesListUrl,
       },
     );
+  });
+
+  $("#imageDialog").on("hidden.bs.modal", function () {
+    if (window.L_mainMap) {
+      window.L = window.L_mainMap;
+    }
   });
 
   // set size of modal dialog during a resize
@@ -1815,19 +1959,19 @@ function init() {
 function getParamList(paramName, paramValue) {
   var paramList = [];
 
-  var q = $.url().param("q"); //$.query.get('q')[0];
-  var fqList = $.url().param("fq"); //$.query.get('fq');
-  var sort = $.url().param("sort");
-  var dir = $.url().param("dir") || $.url().param("order"); // solr || grails (via pagination taglib)
-  var wkt = $.url().param("wkt");
-  var pageSize = $.url().param("pageSize");
-  var lat = $.url().param("lat");
-  var lon = $.url().param("lon");
-  var rad = $.url().param("radius");
-  var taxa = $.url().param("taxa");
-  var qualityProfile = $.url().param("qualityProfile");
-  var disableQualityFilter = $.url().param("disableQualityFilter");
-  var disableAllQualityFilters = $.url().param("disableAllQualityFilters");
+  var q = getUrlParam("q"); //$.query.get('q')[0];
+  var fqList = getUrlParamAll("fq"); //$.query.get('fq');
+  var sort = getUrlParam("sort");
+  var dir = getUrlParam("dir") || getUrlParam("order"); // solr || grails (via pagination taglib)
+  var wkt = getUrlParam("wkt");
+  var pageSize = getUrlParam("pageSize");
+  var lat = getUrlParam("lat");
+  var lon = getUrlParam("lon");
+  var rad = getUrlParam("radius");
+  var taxa = getUrlParam("taxa");
+  var qualityProfile = getUrlParam("qualityProfile");
+  var disableQualityFilter = getUrlParamAll("disableQualityFilter");
+  var disableAllQualityFilters = getUrlParam("disableAllQualityFilters");
 
   // add query param
   if (q != null) {
@@ -1883,10 +2027,7 @@ function getParamList(paramName, paramValue) {
   }
 
   if (disableQualityFilter) {
-    if (typeof disableQualityFilter === "string") {
-      disableQualityFilter = [disableQualityFilter];
-    }
-    disableQualityFilter.forEach(function(value, index, array) {
+    disableQualityFilter.forEach(function (value, index, array) {
       paramList.push("disableQualityFilter=" + value);
     });
   }
@@ -2520,7 +2661,8 @@ function loadFacet(facet) {
       queryString +
       "&facets=" +
       facet +
-      queryContextParam;
+      queryContextParam +
+      "&pageSize=0";
 
     $.ajax({
       url: url,
@@ -2651,7 +2793,27 @@ function formatFieldName(fieldName) {
 function formatFieldValue(facetName, item) {
   // surround with quotes: fq value if contains spaces but not for range queries
   var label = item.displayLabel ? item.displayLabel : item.label;
-  if (label.indexOf("@") != -1) {
+  let skipFormatting = [
+    "dataResourceName",
+    "dataResourceUid",
+    "data_resource",
+    "data_resource_uid",
+    "collectionName",
+    "collectionUid",
+    "collection_name",
+    "collection_uid",
+    "institutionName",
+    "institutionUid",
+    "institution_name",
+    "institution_uid",
+    "dataProviderName",
+    "dataProviderUid",
+    "data_provider",
+    "data_provider_uid",
+  ].includes(facetName);
+  if (skipFormatting) {
+    return label;
+  } else if (label.indexOf("@") != -1) {
     label = label.substring(0, label.indexOf("@"));
   } else if (jQuery.i18n.prop(item.i18nCode).indexOf("[") == -1) {
     // i18n substitution

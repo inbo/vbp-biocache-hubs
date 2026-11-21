@@ -672,6 +672,10 @@ class OccurrenceTagLib {
      * @attr annotate REQUIRED
      * @attr path
      * @attr guid
+     * @attr raw if true, skips HTML sanitization of the body (sanitizeBodyText strips
+     *           elements/attributes such as &lt;img&gt;, target, rel, etc.). Only use this
+     *           for trusted, code-generated markup (e.g. alatag:formatLicense) - never for
+     *           values sourced directly from record/user-supplied data.
      */
     def occurrenceTableRow = { attrs, body ->
         String bodyText = (String) body()
@@ -682,6 +686,7 @@ class OccurrenceTagLib {
         def fieldName = attrs.fieldName
         def infoMessage = attrs.infoMessage
         def fieldNameIsMsgCode = attrs.fieldNameIsMsgCode
+        def raw = attrs.raw
         def userDetails
 
         if(fieldCode == 'transcriber'){
@@ -715,6 +720,8 @@ class OccurrenceTagLib {
                         a(href: href, target: "_blank") {
                             mkp.yieldUnescaped(bodyText)
                         }
+                    } else if (raw) {
+                        mkp.yieldUnescaped(bodyText)
                     } else {
                         // allow sanitized HTML to be rendered in output
                         mkp.yieldUnescaped(sanitizeBodyText(bodyText, true))
@@ -807,6 +814,128 @@ class OccurrenceTagLib {
         out << output
     }
 
+    /**
+     * Generic pattern matcher for 'CC-BY...' style license values (e.g. 'CC-BY', 'CC-BY-NC',
+     * 'CC-BY-NC-ND 4.0 (Int)', 'CC-BY 3.0 (Au)', 'CC-BY-NC-Aus', 'CC-BY-SA 4.0 (Int)', etc.).
+     */
+    private static final Pattern CC_BY_PATTERN = Pattern.compile(
+        /^CC[\s-]?BY(-NC-ND|-NC-SA|-NC|-ND|-SA)?[\s-]*(\d+(?:\.\d+)?)?\s*[\(-]?([A-Za-z]+)?\)?$/,
+        Pattern.CASE_INSENSITIVE
+    )
+
+    // Built-in jurisdiction aliases
+    private static final Map<String, String> DEFAULT_JURISDICTIONS = [
+        au           : 'au',
+        aus          : 'au',
+        australia    : 'au',
+        nz           : 'nz',
+        nzl          : 'nz',
+        newzealand   : 'nz',
+        int          : '',
+        intl         : '',
+        international: '',
+        unported     : ''
+    ]
+
+    Map parseCcByLicense(String licenseStr) {
+        def matcher = CC_BY_PATTERN.matcher(licenseStr.trim())
+        if (!matcher.matches()) return null
+
+        String variant = matcher.group(1)?.toLowerCase()?.replaceFirst('^-', '') // e.g. 'nc-nd', 'nc', 'sa', or null
+        String version = matcher.group(2)
+        String jurisdiction = matcher.group(3)?.toLowerCase()
+
+        Map<String, String> jurisdictions = DEFAULT_JURISDICTIONS + (grailsApplication.config.getProperty("license.ccBy.jurisdictions", Map, [:]) ?: [:])
+        String defaultVersion = grailsApplication.config.getProperty("license.ccBy.defaultVersion", String, '4.0')
+        String portedVersion = grailsApplication.config.getProperty("license.ccBy.portedVersion", String, '3.0')
+
+        // Normalise jurisdiction to the licensebuttons.net/creativecommons.org country code.
+        String country = ''
+        if (jurisdiction) {
+            if (jurisdictions.containsKey(jurisdiction)) {
+                country = jurisdictions[jurisdiction] ?: ''
+            } else if (jurisdiction.length() == 2) {
+                country = jurisdiction
+            }
+        }
+
+        // Ported (country-specific) legal code typically only exists for the 3.0 licenses.
+        if (country && !version) {
+            version = portedVersion
+        } else if (country && version == defaultVersion) {
+            country = ''
+        }
+        if (!version) {
+            version = defaultVersion
+        }
+
+        String ccPath = variant ? "by-${variant}" : 'by'
+        String countrySegment = country ? "${country}/" : ''
+
+        [
+            label: "CC ${ccPath.toUpperCase()}",
+            img  : "https://licensebuttons.net/l/${ccPath}/${version}/${countrySegment}88x31.png",
+            url  : "https://creativecommons.org/licenses/${ccPath}/${version}/${countrySegment}"
+        ]
+    }
+
+    /**
+     * Render a license value as a CC badge image linking to the license page, falling back
+     * to plain text if no image/url can be determined for the value.
+     *
+     * @attr license REQUIRED
+     */
+    def formatLicense = { attrs ->
+        def license = attrs.license
+        log.debug("formatLicense: attrs.license=${license} (${license?.getClass()})")
+        if (!license) {
+            log.debug("formatLicense: license attr is blank/null, rendering nothing")
+            return
+        }
+
+        String licenseStr = license.toString()
+        List lookup = grailsApplication.config.getProperty("license.lookup", List, [])
+        log.debug("formatLicense: licenseStr=\"${licenseStr}\", license.lookup has ${lookup?.size()} entries")
+
+        def entry = lookup.find { row ->
+            try {
+                boolean matches = licenseStr ==~ /(?i)${row.pattern}/
+                if (matches) {
+                    log.debug("formatLicense: licenseStr \"${licenseStr}\" matched license.lookup pattern '${row.pattern}' -> ${row}")
+                }
+                matches
+            } catch (Exception e) {
+                log.info("Invalid license.lookup regex pattern: ${row.pattern}", e)
+                false
+            }
+        }
+
+        if (!entry) {
+            log.debug("formatLicense: no license.lookup entry matched \"${licenseStr}\" at all (not even the catch-all)")
+        } else if (!entry.img) {
+            log.debug("formatLicense: license.lookup matched \"${licenseStr}\" but entry has no img (likely the blank catch-all): ${entry}")
+        }
+
+        // Fall back to the generic CC-BY pattern matcher if the config lookup didn't
+        // find a specific match (i.e. only matched the blank catch-all, or nothing).
+        if (!entry?.img) {
+            def ccByEntry = parseCcByLicense(licenseStr)
+            log.debug("formatLicense: parseCcByLicense(\"${licenseStr}\") -> ${ccByEntry}")
+            if (ccByEntry) entry = ccByEntry
+        }
+
+        if (entry?.img) {
+            log.debug("formatLicense: rendering CC badge for \"${licenseStr}\" using entry=${entry}")
+            String label = StringEscapeUtils.escapeHtml(licenseStr)
+            String href = StringEscapeUtils.escapeHtml(entry.url)
+            String img = StringEscapeUtils.escapeHtml(entry.img)
+            out << "<a href=\"${href}\" target=\"_blank\" rel=\"license\"><img src=\"${img}\" alt=\"${label}\" /></a> ${label}"
+        } else {
+            log.debug("formatLicense: no img could be determined for \"${licenseStr}\", rendering as plain text")
+            out << StringEscapeUtils.escapeHtml(licenseStr)
+        }
+    }
+
     def pipeWhitespace(str) {
         // inject whitespace around pipe
         str.replaceAll("(?<=\\S)\\|(?=\\S)", " | ")
@@ -832,6 +961,17 @@ class OccurrenceTagLib {
         def outputResultsLabel = { cssClass, label, value, test ->
             if (test) {
                 mb.span(class:'resultValue ' + cssClass) {
+                    span(class:'resultsLabel') {
+                        mkp.yieldUnescaped(label + ": ")
+                    }
+                    mkp.yieldUnescaped(value)
+                }
+            }
+        }
+
+        def outputResultsLabelNotCapitalized = { cssClass, label, value, test ->
+            if (test) {
+                mb.span(class:'resultValue ' + cssClass, style: 'text-transform: none') {
                     span(class:'resultsLabel') {
                         mkp.yieldUnescaped(label + ": ")
                     }
@@ -918,9 +1058,9 @@ class OccurrenceTagLib {
             }
 
             p(class:'rowB') {
-                outputResultsLabel('institutionName', alatag.message(code:"record.institutionName.label"), alatag.message(code:occurrence.institutionName), occurrence.institutionName)
-                outputResultsLabel('collectionName', alatag.message(code:"record.collectionName.label"), alatag.message(code:occurrence.collectionName), occurrence.collectionName)
-                outputResultsLabel('dataResourceName', alatag.message(code:"record.dataResourceName.label"), alatag.message(code:occurrence.dataResourceName), !occurrence.collectionName && occurrence.dataResourceName)
+                outputResultsLabelNotCapitalized('institutionName', alatag.message(code:"record.institutionName.label"), alatag.message(code:occurrence.institutionName), occurrence.institutionName)
+                outputResultsLabelNotCapitalized('collectionName', alatag.message(code:"record.collectionName.label"), alatag.message(code:occurrence.collectionName), occurrence.collectionName)
+                outputResultsLabelNotCapitalized('dataResourceName', alatag.message(code:"record.dataResourceName.label"), alatag.message(code:occurrence.dataResourceName), !occurrence.collectionName && occurrence.dataResourceName)
                 outputResultsLabel('basisofrecord', alatag.message(code:"record.basisofrecord.label"), alatag.message(code:occurrence.basisOfRecord), occurrence.basisOfRecord)
                 outputResultsLabel('catalognumber', alatag.message(code:"record.catalogNumber.label"), "${occurrence.raw_collectionCode ? occurrence.raw_collectionCode + ':' : ''}${occurrence.raw_catalogNumber}", occurrence.raw_catalogNumber)
                 a(
@@ -1193,7 +1333,7 @@ class OccurrenceTagLib {
         String output = message.replaceAll(/apiKey=[a-z0-9_\-]*/, "")
         log.debug "stripApiKey input = ${message}"
         log.debug "stripApiKey output = ${output}"
-        out << output
+        out << sanitizeBodyText(output)
     }
 
     @Value('${dataquality.enabled}')
@@ -1387,5 +1527,30 @@ class OccurrenceTagLib {
                 span alatag.message(code:"list.resultsreturned.span.returnedtext1", default:'results for')
             }
         }
+    }
+
+    /**
+     * Global js decoder to assist in decoding base64 encoded gsp input
+     */
+    def hubDecoder = { attrs ->
+        out << '<script type="text/javascript">'
+        out << 'window.__hubDecode = window.__hubDecode || function (b64) {'
+        out << '  try {'
+        out << '    var bin = atob(b64);'
+        out << '    var bytes = new Uint8Array(bin.length);'
+        out << '    for (var i = 0; i < bin.length; i++) { bytes[i] = bin.charCodeAt(i); }'
+        out << '    return new TextDecoder("utf-8").decode(bytes);'
+        out << '  } catch (e) { return ""; }'
+        out << '};'
+        out << '</script>'
+    }
+
+    /**
+     * Base64 encode a string for gsp output
+     */
+    def b64 = { attrs ->
+        def v = attrs.value
+        def s = (v == null) ? '' : v.toString()
+        out << s.getBytes('UTF-8').encodeBase64().toString()
     }
 }

@@ -2,6 +2,7 @@
  * font-awesome is provided by ala-bootstrap3
  **** =require font-awesome.css
  *=require leaflet/leaflet.css
+ *=require maplibre-gl.css
  *=require record.css
  */
 

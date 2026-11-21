@@ -101,15 +101,53 @@
     <a href="#"><g:message code="map.recordpopup" default="View records at this point"/></a>
 </div>
 
+<alatag:hubDecoder/> <!-- injects window.__hubDecode -->
+<g:set var="defaultMapVectorTileUrl" value="${grailsApplication.config.getProperty('map.minimal.vectorTileUrl', String) ?: grailsApplication.config.getProperty('map.minimal.styleUrl', String) ?: ''}"/>
+<g:set var="defaultMapUrl" value="${grailsApplication.config.getProperty('map.minimal.url', String) ?: ''}"/>
+<%
+    if (defaultMapVectorTileUrl && !defaultMapVectorTileUrl.contains('key=')) {
+        def apiKey = grailsApplication.config.getProperty('map.minimal.apiKey', String)
+        if (!apiKey && defaultMapUrl) {
+            def matcher = (defaultMapUrl =~ /[?&]key=([^&#]+)/)
+            if (matcher.find()) {
+                apiKey = matcher.group(1)
+            }
+        }
+        if (apiKey) {
+            defaultMapVectorTileUrl += (defaultMapVectorTileUrl.contains('?') ? '&' : '?') + "key=${apiKey}"
+        }
+    }
+%>
 <asset:script type="text/javascript">
-    //var mbAttr = 'Map data &copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>, imagery &copy; <a href="http://cartodb.com/attributions">CartoDB</a>';
-	//var mbUrl = 'https://cartodb-basemaps-{s}.global.ssl.fastly.net/light_all/{z}/{x}/{y}.png';
-    var defaultBaseLayer = L.tileLayer("${grailsApplication.config.getProperty('map.minimal.url')}", {
+    var leaflet = (window.L && window.L.maplibreGL) ? window.L : (window.L_mainMap || window.L);
+    if (leaflet.Google) {
+        leaflet.Google.apiKey = "${grailsApplication.config.getProperty('google.apikey', String, '')}";
+    }
+    var defaultBaseLayer;
+    if ("${defaultMapVectorTileUrl}" && typeof leaflet.maplibreGL === 'function') {
+        try {
+            var vectorOptions = {
+                style: "${defaultMapVectorTileUrl}",
+                pane: 'tilePane',
+                zIndex: 0
+            };
+            var attr = "${raw(grailsApplication.config.getProperty('map.minimal.attr'))}";
+            if (attr) {
+                vectorOptions.attributionControl = { customAttribution: attr };
+            }
+            defaultBaseLayer = leaflet.maplibreGL(vectorOptions);
+        } catch (e) {
+            console.warn("Failed to initialize MapLibre GL layer, falling back to raster tiles:", e);
+        }
+    }
+    if (!defaultBaseLayer) {
+        defaultBaseLayer = leaflet.tileLayer("${defaultMapUrl}", {
             attribution: "${raw(grailsApplication.config.getProperty('map.minimal.attr'))}",
             subdomains: "${grailsApplication.config.getProperty('map.minimal.subdomains')}",
             mapid: "${grailsApplication.config.getProperty('map.mapbox.id', String, '')}",
             token: "${grailsApplication.config.getProperty('map.mapbox.token', String, '')}"
         });
+    }
 
     var UTM_GRID_MODES = {
         'utm-grid-1000': {facet: '${grailsApplication.config.getProperty("map.utmGrid.facet1km", String, "cl10531")}', layer: 'ALA:utm1_vl_wgs84', maxFeatures: 15000},
@@ -117,11 +155,12 @@
     };
 
     var MAP_VAR = {
+        googleApiKey : "${grailsApplication.config.getProperty('google.apikey', String, '')}",
         map : null,
         mappingUrl : "${mappingUrl}", // e.g. "https://biocache.ala.org.au/ws"
         spatialWfsUrl : window.location.protocol + "//" + window.location.host + "/geoserver/wfs",
-        query : "${searchString}", // e.g. "?q=*%3A*&lat=-34.266296&lon=145.3838&radius=154.8"
-        queryDisplayString : "${queryDisplayString}", // e.g. "[all records] - within 154.8 km of point(-34.266, 145.384)"
+        query : window.__hubDecode("<alatag:b64 value="${searchString}"/>"), // e.g. "?q=*%3A*&lat=-34.266296&lon=145.3838&radius=154.8"
+        queryDisplayString : window.__hubDecode("<alatag:b64 value="${queryDisplayString}"/>"), // e.g. "[all records] - within 154.8 km of point(-34.266, 145.384)"
         center: [-23.6,133.6],
         defaultLatitude : "${grailsApplication.config.getProperty('map.defaultLatitude', String, '-23.6')}",
         defaultLongitude : "${grailsApplication.config.getProperty('map.defaultLongitude', String, '133.6')}",
@@ -134,7 +173,8 @@
                     format: 'image/png',
                     transparent: true,
                     opacity: ${grailsApplication.config.getProperty("map.overlay.opacity","0.5")},
-                    attribution: "${layer.source}"
+                    attribution: "${layer.source}",
+                    zIndex: 5
                 }),
                 </g:each>
             </g:if>
@@ -288,8 +328,51 @@
         L.Browser.any3d = false; // FF bug prevents selects working properly
 
         MAP_VAR.map.on('baselayerchange', function(event) {
-            $.cookie('map.baseLayer', event.name, { path: '/' })
+            $.cookie('map.baseLayer', event.name, { path: '/' });
+            if (event.layer && typeof event.layer.bringToBack === 'function') {
+                event.layer.bringToBack();
+            }
+            if (event.name === 'Minimal' && event.layer === defaultBaseLayer && typeof defaultBaseLayer.getMaplibreMap === 'function') {
+                var glMap = defaultBaseLayer.getMaplibreMap();
+                if (glMap) {
+                    glMap.once('error', handleVectorFallback);
+                }
+            }
+            $.each(MAP_VAR.currentLayers, function(index, value){
+                if (typeof value.bringToFront === 'function') {
+                    value.bringToFront();
+                }
+            });
         });
+
+        function handleVectorFallback(err) {
+            console.warn("MapLibre GL error encountered, falling back to raster tiles:", err);
+            var wasActive = MAP_VAR.map && MAP_VAR.map.hasLayer(defaultBaseLayer);
+            if (wasActive) {
+                MAP_VAR.map.removeLayer(defaultBaseLayer);
+            }
+            var fallbackLayer = leaflet.tileLayer("${defaultMapUrl}", {
+                attribution: "${raw(grailsApplication.config.getProperty('map.minimal.attr'))}",
+                subdomains: "${grailsApplication.config.getProperty('map.minimal.subdomains')}",
+                mapid: "${grailsApplication.config.getProperty('map.mapbox.id', String, '')}",
+                token: "${grailsApplication.config.getProperty('map.mapbox.token', String, '')}"
+            });
+            if (wasActive) {
+                fallbackLayer.addTo(MAP_VAR.map);
+                if (typeof fallbackLayer.bringToBack === 'function') {
+                    fallbackLayer.bringToBack();
+                }
+            }
+            MAP_VAR.baseLayers["Minimal"] = fallbackLayer;
+            if (MAP_VAR.layerControl) {
+                MAP_VAR.layerControl.removeLayer(defaultBaseLayer);
+                MAP_VAR.layerControl.addBaseLayer(fallbackLayer, "Minimal");
+            }
+        }
+
+        if (typeof defaultBaseLayer.once === 'function') {
+            defaultBaseLayer.once('error', handleVectorFallback);
+        }
 
         // select the user's preferred base layer
         var userBaseLayer = $.cookie('map.baseLayer')
@@ -297,8 +380,21 @@
         if (baseLayer !== undefined) {
             //add the default base layer
             MAP_VAR.map.addLayer(baseLayer);
+            if (typeof baseLayer.bringToBack === 'function') {
+                baseLayer.bringToBack();
+            }
         } else {
             MAP_VAR.map.addLayer(defaultBaseLayer);
+            if (typeof defaultBaseLayer.bringToBack === 'function') {
+                defaultBaseLayer.bringToBack();
+            }
+        }
+
+        if (typeof defaultBaseLayer.getMaplibreMap === 'function') {
+            var glMap = defaultBaseLayer.getMaplibreMap();
+            if (glMap) {
+                glMap.once('error', handleVectorFallback);
+            }
         }
 
         $('.colour-by-control').click(function(e){
@@ -376,10 +472,10 @@
             objRight = wkt.toObject({color: '#bada55', translate: {x: 360} });
         } else if (isSpatialRadiusSearch()) {
             // draw circle onto map
-            obj = L.circle([$.url().param('lat'), $.url().param('lon')], ($.url().param('radius') * 1000), {color: '#bada55'});
+            obj = L.circle([getUrlParam('lat'), getUrlParam('lon')], (getUrlParam('radius') * 1000), {color: '#bada55'});
             // following lines were causing error in leaflet, so removed them. NdR Jan 2018.
-            // objLeft  = L.circle([$.url().param('lat'), $.url().param('lon')] - 360, ($.url().param('radius') * 1000), {color: '#bada55'});
-            // objRight = L.circle([$.url().param('lat'), $.url().param('lon')] + 360, ($.url().param('radius') * 1000), {color: '#bada55'});
+            // objLeft  = L.circle([getUrlParam('lat'), getUrlParam('lon')] - 360, (getUrlParam('radius') * 1000), {color: '#bada55'});
+            // objRight = L.circle([getUrlParam('lat'), getUrlParam('lon')] + 360, (getUrlParam('radius') * 1000), {color: '#bada55'});
         }
         if (obj) {
             MAP_VAR.map.addHandler('paramArea', L.PointClickHandler.extend({obj: obj}));
@@ -517,7 +613,8 @@
             ENV: envProperty,
             opacity: opacity,
             GRIDDETAIL: gridSizeMap[pointSize],
-                STYLE: "opacity:"+opacity // for grid data
+            STYLE: "opacity:"+opacity, // for grid data
+            zIndex: 10
             });
         }
 
@@ -576,6 +673,9 @@
         }
         MAP_VAR.layerControl.addOverlay(layer, 'Occurrences');
         MAP_VAR.map.addLayer(layer);
+        if (typeof layer.bringToFront === 'function') {
+            layer.bringToFront();
+        }
         MAP_VAR.currentLayers.push(layer);
 
         if (utmGridMode) {
@@ -584,6 +684,9 @@
 
         for (let key in MAP_VAR.overlays) {
             MAP_VAR.map.addLayer(MAP_VAR.overlays[key]);
+            if (typeof MAP_VAR.overlays[key].bringToFront === 'function') {
+                MAP_VAR.overlays[key].bringToFront();
+            }
         }
 
         return true;
@@ -857,16 +960,13 @@
     /**
      * Spatial searches from Explore Your Area - draw a circle representing
      * the radius boundary for the search.
-     *
-     * Note: this function has a dependency on purl.js:
-     * https://github.com/allmarkedup/purl
      */
     function drawCircleRadius() {
         if (isSpatialRadiusSearch()) {
             // spatial search from EYA
-            var lat = $.url().param('lat');
-            var lng = $.url().param('lon');
-            var radius = $.url().param('radius');
+            var lat = getUrlParam('lat');
+            var lng = getUrlParam('lon');
+            var radius = getUrlParam('radius');
             var latLng = L.latLng(lat, lng);
             var circleOpts = {
                 weight: 1,
@@ -893,9 +993,9 @@
      */
     function isSpatialRadiusSearch() {
         var returnBool = false;
-        var lat = $.url().param('lat');
-        var lng = $.url().param('lon');
-        var radius = $.url().param('radius');
+        var lat = getUrlParam('lat');
+        var lng = getUrlParam('lon');
+        var radius = getUrlParam('radius');
 
         if (lat && lng && radius) {
             returnBool = true;
@@ -1118,7 +1218,7 @@
         }
 
         var downloadUrl =  $('#mapDownloadUrl').val() +
-                '${raw(sr.urlParameters)}' +
+                window.__hubDecode("<alatag:b64 value="${sr?.urlParameters}"/>") +
                 '&extents=' + extents +  //need to retrieve the
                 '&format=' + $('#format').val() +
                 '&dpi=' + $('#dpi').val() +

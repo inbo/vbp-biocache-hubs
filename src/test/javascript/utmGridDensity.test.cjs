@@ -81,7 +81,8 @@ function gridResponse(counts) {
 
 test('UTM layers use the factory provided by the bundled Leaflet version', () => {
     const leaflet = fs.readFileSync(path.join(root, 'grails-app/assets/vendor/leaflet/leaflet-src.js'), 'utf8');
-    assert.match(leaflet, /L\.geoJson = function/);
+    // Leaflet 0.7 defines L.geoJson directly; 1.9 minified exports it as an alias of geoJSON
+    assert.match(leaflet, /L\.geoJson = function|\.geoJson=\w+/);
     assert.match(source, /layer = L\.geoJson\(null\)/);
     assert.doesNotMatch(source, /L\.geoJSON\(/);
     assert.match(source, /utm-grid-1000'.*layer: 'ALA:utm1_vl_wgs84', maxFeatures: 15000/);
