@@ -129,6 +129,10 @@ class OccurrenceTagLib {
         def dwcTerm = fieldCode?.contains('_') ? fieldCode.split('_').collect { part ->
             part ? part[0].toUpperCase() + part.substring(1) : part
         }.join('') : fieldCode
+        // dwc.tdwg.org anchors are lower camel case (#dwc_basisOfRecord)
+        if (dwcTerm) {
+            dwcTerm = dwcTerm[0].toLowerCase() + dwcTerm.substring(1)
+        }
 
         if (dwcTerm && DWC_TERMS.contains(dwcTerm.toLowerCase())) {
             out << "<a href=\"https://dwc.tdwg.org/list/#dwc_${dwcTerm}\"><i class=\"dwc-logo\"></i></a>"
