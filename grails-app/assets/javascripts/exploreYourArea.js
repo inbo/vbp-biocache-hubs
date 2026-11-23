@@ -85,8 +85,8 @@ function init() {
 
     leafletI18n();
 
-    // initialise Google Geocoder
-    geocoder = new google.maps.Geocoder();
+    // initialise Google Geocoder (the Maps API is lazy loaded since #667, so wait for it)
+    initGeocoder();
 
     // Catch page events...
 
@@ -400,7 +400,8 @@ function loadLeafletMap() {
     }
 
     // Fix for asset pipeline confusing Leaflet WRT to path to images
-    L.Icon.Default.imagePath = MAP_VAR.mapIconUrlPath;
+    // Leaflet 1.x appends the file name directly, so the path needs a trailing slash
+    L.Icon.Default.imagePath = MAP_VAR.mapIconUrlPath.replace(/\/?$/, '/');
 
     // Add marker
     marker = L.marker(latLng, {
@@ -463,10 +464,36 @@ function loadLeafletMap() {
     updateMarkerPosition(latLng);
 }
 
+var pendingGeocodePos = null;
+
+/**
+ * Load the Google Maps API on demand (via the Leaflet Google plugin loader) and create the geocoder.
+ * Without a key no geocoder is created; address lookups are then skipped.
+ */
+function initGeocoder() {
+    var leaflet = window.L && window.L.maplibreGL ? window.L : (window.L_mainMap || window.L);
+    if (!MAP_VAR.hasGoogleKey || !leaflet.Google || !leaflet.Google.loadGoogleMaps) {
+        return;
+    }
+    leaflet.Google.loadGoogleMaps(MAP_VAR.googleApiKey, function() {
+        geocoder = new google.maps.Geocoder();
+        if (pendingGeocodePos) {
+            var pos = pendingGeocodePos;
+            pendingGeocodePos = null;
+            geocodePosition(pos);
+        }
+    });
+}
+
 /**
  * Google geocode function
  */
 function geocodePosition(pos) {
+    if (!geocoder) {
+        // Maps API not loaded (yet): geocode once it is
+        pendingGeocodePos = pos;
+        return;
+    }
     var gLatLng = new google.maps.LatLng(pos.lat, pos.lng); // convert leaflet LatLng to Google LatLng
 
     geocoder.geocode({
@@ -598,7 +625,7 @@ function attemptGeolocation() {
 
         // Neither functions gets called for some reason, so I've added a delay to initialize map anyway
         setTimeout(function() {if (!MAP_VAR.map) positionWasDeclined();}, 9000);
-    } else if (google.loader && google.loader.ClientLocation) {
+    } else if (typeof google !== 'undefined' && google.loader && google.loader.ClientLocation) {
         // Google AJAX API fallback GeoLocation
         updateMarkerPosition(L.latLng(google.loader.ClientLocation.latitude, google.loader.ClientLocation.longitude));
         initialize();
