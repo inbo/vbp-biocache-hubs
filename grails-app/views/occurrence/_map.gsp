@@ -416,7 +416,8 @@
         MAP_VAR.map.addControl(new ColourByControl());
 
         L.Util.requestAnimFrame(MAP_VAR.map.invalidateSize, MAP_VAR.map, !1, MAP_VAR.map._container);
-        L.Browser.any3d = false; // FF bug prevents selects working properly
+        // L.Browser.any3d is no longer forced to false (a Leaflet 0.7 Firefox select workaround): with Leaflet 1.9 it
+        // positions popups with left/top, which the popup offset overwrites, so they appear at the left edge of the map
 
         MAP_VAR.map.on('baselayerchange', function(event) {
             $.cookie('map.baseLayer', event.name, { path: '/' });

@@ -551,3 +551,10 @@ test('individual grid layers are listed in the dropdown unless map.gridLayers.li
     assert.match(source, /getProperty\('map\.gridLayers\.listLayers', Boolean, true\)/);
     assert.match(source, /<g:if test="\$\{listGridLayers\}">\s*<g:each var="gridLayer" in="\$\{gridLayers\}">\s*<option value="\$\{gridLayer\.id\}"/);
 });
+
+test('map templates do not disable Leaflet 3D positioning, which misplaces popups with Leaflet 1.9', () => {
+    for (const template of ['grails-app/views/occurrence/_map.gsp', 'grails-app/views/home/index.gsp']) {
+        const text = fs.readFileSync(path.join(root, template), 'utf8');
+        assert.doesNotMatch(text, /L\.Browser\.any3d\s*=\s*false/, template);
+    }
+});
