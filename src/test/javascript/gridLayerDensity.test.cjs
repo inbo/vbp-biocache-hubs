@@ -39,6 +39,8 @@ function gridResponse(counts, {gridLayer = DEFAULT_GRID_LAYER, zoom = 10} = {}) 
         const element = {
             attr: () => element,
             append: () => element,
+            filter: () => element,
+            first: () => element,
             text: value => {
                 if (value !== undefined) return element;
                 return selector === '#opacityslider-val' ? opacity : 'Grid layer';
@@ -139,36 +141,217 @@ test('clicking a cell count filters that cell and preserves other filters and th
     assert.deepEqual(url.searchParams.getAll('fq'), ['cl102:"Vlaams Gewest"', 'cl10165:"FS1447"']);
 });
 
-test('popup auto-pan keeps the grid, but subsequent ordinary movement refreshes it', () => {
-    const handlers = {};
-    const hiddenGridLayer = {};
-    let refreshes = 0;
-    let selectedMode = 'utm-grid-1000';
-    vm.runInNewContext(templateSection('        var popupAutoPan', '        addQueryLayer(true);'), {
-        MAP_VAR: {
-            map: {on(event, handler) { handlers[event] = handler; }},
-            currentLayers: [hiddenGridLayer]
-        },
-        GRID_LAYERS: {'utm-grid-1000': {}, 'utm-grid-5000': {}},
-        $: () => ({val: () => selectedMode}),
-        loadGridLayerDensity(layer) {
-            assert.equal(layer, hiddenGridLayer);
-            refreshes++;
-        },
-        addQueryLayer() { assert.fail('Movement must not rebuild or re-add hidden layers'); }
+const AUTO_DISPLAYS = {
+    'auto-utm': {id: 'auto-utm', steps: [
+        {layer: 'utm-grid-5000', maxZoom: 10},
+        {layer: 'utm-grid-1000', maxZoom: 13},
+        {layer: 'points', maxZoom: null}
+    ]},
+    'auto-ifbl': {id: 'auto-ifbl', steps: [
+        {layer: 'ifbl-uur', maxZoom: 10},
+        {layer: 'ifbl-kwartier', maxZoom: 12}
+    ]}
+};
+
+const AUTO_GRID_LAYERS = {
+    'utm-grid-5000': {id: 'utm-grid-5000', minZoom: 0, maxZoom: null},
+    'utm-grid-1000': {id: 'utm-grid-1000', minZoom: 0, maxZoom: null},
+    'ifbl-uur': {id: 'ifbl-uur', minZoom: 0, maxZoom: null},
+    'ifbl-kwartier': {id: 'ifbl-kwartier', minZoom: 0, maxZoom: null}
+};
+
+function resolveMapDisplayContext(gridLayers = AUTO_GRID_LAYERS) {
+    const context = {AUTO_DISPLAYS, GRID_LAYERS: gridLayers};
+    vm.createContext(context);
+    vm.runInContext(templateSection('    function resolveMapDisplay(', '    function gridLayerLabel('), context);
+    return context;
+}
+
+test('an auto display resolves to the layer of the first step whose maxZoom covers the zoom level', () => {
+    const {resolveMapDisplay} = resolveMapDisplayContext();
+    assert.equal(resolveMapDisplay('auto-utm', 1), 'utm-grid-5000');
+    assert.equal(resolveMapDisplay('auto-utm', 10), 'utm-grid-5000');
+    assert.equal(resolveMapDisplay('auto-utm', 11), 'utm-grid-1000');
+    assert.equal(resolveMapDisplay('auto-utm', 13), 'utm-grid-1000');
+    assert.equal(resolveMapDisplay('auto-utm', 14), '', 'points step shows the default points');
+    assert.equal(resolveMapDisplay('auto-utm', 20), '');
+});
+
+test('beyond the last step of an auto display its last step is used', () => {
+    const {resolveMapDisplay} = resolveMapDisplayContext();
+    assert.equal(resolveMapDisplay('auto-ifbl', 11), 'ifbl-kwartier');
+    assert.equal(resolveMapDisplay('auto-ifbl', 18), 'ifbl-kwartier');
+});
+
+test('auto display steps whose grid layer is outside its own zoom range are skipped', () => {
+    const {resolveMapDisplay} = resolveMapDisplayContext({
+        ...AUTO_GRID_LAYERS,
+        'utm-grid-5000': {id: 'utm-grid-5000', minZoom: 0, maxZoom: 8},
+        'utm-grid-1000': {id: 'utm-grid-1000', minZoom: 12, maxZoom: null}
     });
-    for (const mode of ['utm-grid-1000', 'utm-grid-5000']) {
-        selectedMode = mode;
-        handlers.autopanstart();
-        const previousRefreshes = refreshes;
-        handlers.moveend();
-        assert.equal(refreshes, previousRefreshes);
-        handlers.moveend();
-        assert.equal(refreshes, previousRefreshes + 1);
+    assert.equal(resolveMapDisplay('auto-utm', 8), 'utm-grid-5000');
+    assert.equal(resolveMapDisplay('auto-utm', 9), '', 'neither grid layer shows zoom 9');
+    assert.equal(resolveMapDisplay('auto-utm', 12), 'utm-grid-1000');
+});
+
+test('selections other than auto displays are returned unchanged', () => {
+    const {resolveMapDisplay} = resolveMapDisplayContext();
+    for (const selection of ['', 'grid', 'utm-grid-1000', 'basis_of_record']) {
+        assert.equal(resolveMapDisplay(selection, 12), selection);
     }
-    selectedMode = 'grid';
+});
+
+function moveendHandlers({selection, zoom, activeDisplay, currentLayers}) {
+    const handlers = {};
+    const state = {selection, zoom, redraws: 0, refreshes: []};
+    const MAP_VAR = {
+        map: {on(event, handler) { handlers[event] = handler; }, getZoom: () => state.zoom},
+        currentLayers,
+        activeDisplay
+    };
+    const context = {
+        MAP_VAR,
+        AUTO_DISPLAYS,
+        GRID_LAYERS: AUTO_GRID_LAYERS,
+        $: () => ({val: () => state.selection}),
+        loadGridLayerDensity(layer, gridLayer) { state.refreshes.push({layer, gridLayer}); },
+        addQueryLayer(redraw, autoSwitch) {
+            assert.equal(redraw, true);
+            assert.equal(autoSwitch, true);
+            state.redraws++;
+            MAP_VAR.activeDisplay = context.resolveMapDisplay(state.selection, state.zoom);
+        }
+    };
+    vm.createContext(context);
+    vm.runInContext(templateSection('    function resolveMapDisplay(', '    function gridLayerLabel('), context);
+    vm.runInContext(templateSection('        var popupAutoPan', '\n        addQueryLayer(true);\n'), context);
+    return {handlers, state, MAP_VAR};
+}
+
+test('popup auto-pan keeps the grid, but subsequent ordinary movement refreshes it', () => {
+    const hiddenGridLayer = {};
+    for (const mode of ['utm-grid-1000', 'utm-grid-5000']) {
+        const {handlers, state} = moveendHandlers({selection: mode, zoom: 12, activeDisplay: mode, currentLayers: [hiddenGridLayer]});
+        handlers.autopanstart();
+        handlers.moveend();
+        assert.equal(state.refreshes.length, 0);
+        handlers.moveend();
+        assert.equal(state.refreshes.length, 1);
+        assert.equal(state.refreshes[0].layer, hiddenGridLayer);
+        assert.equal(state.redraws, 0, 'movement must not rebuild or re-add hidden layers');
+    }
+    const {handlers, state} = moveendHandlers({selection: 'grid', zoom: 12, activeDisplay: 'grid', currentLayers: [{}]});
     handlers.moveend();
-    assert.equal(refreshes, 2);
+    assert.equal(state.refreshes.length + state.redraws, 0);
+});
+
+test('an auto display redraws the occurrence layer only when the zoom crosses a step threshold', () => {
+    const {handlers, state, MAP_VAR} = moveendHandlers({selection: 'auto-utm', zoom: 9, activeDisplay: 'utm-grid-5000', currentLayers: [{}]});
+    handlers.moveend(); // pan within the 5 km step refreshes the cells
+    assert.deepEqual([state.redraws, state.refreshes.length], [0, 1]);
+
+    state.zoom = 11;
+    handlers.moveend(); // 5 km -> 1 km
+    assert.deepEqual([state.redraws, MAP_VAR.activeDisplay], [1, 'utm-grid-1000']);
+
+    state.zoom = 14;
+    handlers.moveend(); // 1 km -> points
+    assert.deepEqual([state.redraws, MAP_VAR.activeDisplay], [2, '']);
+    handlers.moveend(); // panning points does nothing
+    assert.deepEqual([state.redraws, state.refreshes.length], [2, 1]);
+
+    state.zoom = 8;
+    handlers.moveend(); // points -> 5 km
+    assert.deepEqual([state.redraws, MAP_VAR.activeDisplay], [3, 'utm-grid-5000']);
+});
+
+function queryLayerContext({selection, zoom = 9, currentLayers = []}) {
+    const state = {mapLayers: new Set(currentLayers), controlLayers: [], pointControlsShown: null, densityLoads: 0};
+    const overlay = {name: 'overlay', raised: 0, bringToFront() { this.raised++; }};
+    const jquery = selector => ({
+        val: () => selection,
+        html: () => selector === '#sizeslider-val' ? '4' : selector === '#opacityslider-val' ? '0.6' : '',
+        is: () => false,
+        toggle(shown) { if (selector === '.pointLayerControl') state.pointControlsShown = shown; }
+    });
+    jquery.each = (items, callback) => items.forEach((item, index) => callback(index, item));
+    jquery.ajax = () => {};
+    const context = {
+        MAP_VAR: {
+            map: {
+                getZoom: () => zoom,
+                hasLayer: layer => state.mapLayers.has(layer),
+                addLayer: layer => state.mapLayers.add(layer),
+                removeLayer: layer => state.mapLayers.delete(layer)
+            },
+            layerControl: {addOverlay: layer => state.controlLayers.push(layer), removeLayer() {}},
+            currentLayers: [...currentLayers],
+            overlays: {overlay},
+            query: '?q=*:*',
+            additionalFqs: '',
+            mappingUrl: 'https://example.org'
+        },
+        AUTO_DISPLAYS,
+        GRID_LAYERS: AUTO_GRID_LAYERS,
+        L: {geoJson: () => ({kind: 'grid'}), tileLayer: {wms: () => ({kind: 'points'})}},
+        $: jquery,
+        cancelGridLayerRequests() {},
+        loadGridLayerDensity() { state.densityLoads++; },
+        addDefaultLegendItem() {},
+        addGridLegendItem() {}
+    };
+    vm.createContext(context);
+    vm.runInContext(templateSection('    function resolveMapDisplay(', '    function gridLayerLabel('), context);
+    vm.runInContext(templateSection('    function addQueryLayer(', '    function addDefaultLegendItem('), context);
+    return {context, state, overlay};
+}
+
+test('size and outline controls are hidden while a grid layer is drawn', () => {
+    assert.equal((source.match(/<td class="pointLayerControl">/g) || []).length, 2);
+    for (const [selection, zoom, shown] of [['auto-utm', 9, false], ['auto-utm', 15, true], ['utm-grid-1000', 9, false], ['', 9, true], ['grid', 9, true]]) {
+        const {context, state} = queryLayerContext({selection, zoom});
+        context.addQueryLayer(true);
+        assert.equal(state.pointControlsShown, shown, `${selection} at zoom ${zoom}`);
+    }
+});
+
+test('an auto switch keeps a hidden occurrence layer hidden and leaves overlays alone', () => {
+    const hiddenLayer = {kind: 'grid'};
+    const {context, state, overlay} = queryLayerContext({selection: 'auto-utm', zoom: 15, currentLayers: [hiddenLayer]});
+    state.mapLayers.delete(hiddenLayer);
+    context.addQueryLayer(true, true);
+    const [newLayer] = context.MAP_VAR.currentLayers;
+    assert.equal(newLayer.kind, 'points');
+    assert.equal(state.mapLayers.has(newLayer), false);
+    assert.equal(state.mapLayers.has(overlay), false);
+    assert.equal(overlay.raised, 0, 'a hidden overlay is not touched');
+    assert.equal(state.controlLayers.at(-1), newLayer, 'the new layer is still offered in the layer control');
+});
+
+test('an auto switch of a visible occurrence layer shows the new layer', () => {
+    const visibleLayer = {kind: 'points'};
+    const {context, state} = queryLayerContext({selection: 'auto-utm', zoom: 9, currentLayers: [visibleLayer]});
+    context.addQueryLayer(true, true);
+    const [newLayer] = context.MAP_VAR.currentLayers;
+    assert.equal(newLayer.kind, 'grid');
+    assert.equal(state.mapLayers.has(newLayer), true);
+    assert.equal(state.mapLayers.has(visibleLayer), false);
+    assert.equal(state.densityLoads, 1);
+    assert.equal(context.MAP_VAR.activeDisplay, 'utm-grid-5000');
+});
+
+test('an auto switch keeps a shown overlay above the new occurrence layer', () => {
+    const {context, state, overlay} = queryLayerContext({selection: 'auto-utm', zoom: 9, currentLayers: [{kind: 'points'}]});
+    state.mapLayers.add(overlay);
+    context.addQueryLayer(true, true);
+    assert.equal(overlay.raised, 1);
+});
+
+test('choosing a display re-adds the overlays as before', () => {
+    const {context, state, overlay} = queryLayerContext({selection: ''});
+    context.addQueryLayer(true);
+    assert.equal(state.mapLayers.has(overlay), true);
+    assert.equal(overlay.raised, 1);
 });
 
 test('the WFS request uses the configured URL, layer and feature limit', () => {

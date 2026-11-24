@@ -17,6 +17,18 @@
             minZoom: 0                 # optional, below this zoom level no data is requested (default 0)
             maxZoom: 18                # optional, above this zoom level no data is requested (default no limit)
             scale: log                 # optional, colour scale for the counts: log or linear (default log)
+        auto:                          # optional display options that choose a layer based on the zoom level
+          - id: auto-utm               # required, value usable in map.defaultFacetMapColourBy,
+                                       # label is taken from the map.gridlayer.auto.<id> message (default: id)
+            steps:                     # required, the first step whose maxZoom is >= the current zoom is shown,
+                                       # skipping steps whose grid layer is outside its own minZoom / maxZoom
+              - layer: utm-grid-5000   # required, a grid layer id or 'points'
+                maxZoom: 10            # optional, omit for the last step (beyond the last step it is used too)
+              - layer: utm-grid-1000
+                maxZoom: 13
+              - layer: points
+
+    The default opacity of the occurrence layer is set by map.defaultOpacity (default 0.6).
 --%>
 <g:set var="gridLayers" value="${(grailsApplication.config.getProperty('map.gridLayers.layers', List, []) ?: []).findAll { it?.facet && it?.wfsLayer }.collect { [
         id          : (it.id ?: "grid-${it.facet}").toString(),
@@ -28,6 +40,14 @@
         maxZoom     : it.maxZoom ? it.maxZoom as Integer : null,
         scale       : it.scale?.toString()?.toLowerCase() == 'linear' ? 'linear' : 'log'
 ] }}"/>
+<g:set var="autoDisplays" value="${(grailsApplication.config.getProperty('map.gridLayers.auto', List, []) ?: []).findAll { auto -> auto?.id && auto?.steps }.collect { auto -> [
+        id   : auto.id.toString(),
+        steps: (auto.steps as List).findAll { step -> step?.layer && (step.layer.toString() == 'points' || gridLayers.any { gridLayer -> gridLayer.id == step.layer.toString() }) }.collect { step -> [
+                layer  : step.layer.toString(),
+                maxZoom: step.maxZoom != null ? step.maxZoom as Integer : null
+        ] }
+] }.findAll { auto -> auto.steps }}"/>
+<g:set var="defaultOpacity" value="${grailsApplication.config.getProperty('map.defaultOpacity', String, '0.6')}"/>
 <div style="margin-bottom: 10px">
     <g:if test="${grailsApplication.config.getProperty('skin.useAlaSpatialPortal', Boolean, false)}">
         <g:set var='spatialPortalLink' value="${sr.urlParameters}"/>
@@ -67,6 +87,9 @@
                     <select name="colourBySelect" id="colourBySelect" onchange="changeFacetColours();return true;">
                         <option value=""><g:message code="map.maplayercontrols.tr01td01.option01" default="Points - default colour"/></option>
                         <option value="grid" ${(defaultColourBy == 'grid')?'selected=\"selected\"':''}><g:message code="map.maplayercontrols.tr01td01.option02" default="Record density grid"/></option>
+                        <g:each var="autoDisplay" in="${autoDisplays}">
+                            <option value="${autoDisplay.id}" ${(defaultColourBy == autoDisplay.id)?'selected=\"selected\"':''}><g:message code="map.gridlayer.auto.${autoDisplay.id}" default="${autoDisplay.id}"/></option>
+                        </g:each>
                         <g:each var="gridLayer" in="${gridLayers}">
                             <option value="${gridLayer.id}" ${(defaultColourBy == gridLayer.id)?'selected=\"selected\"':''}><alatag:formatDynamicFacetName fieldName="${gridLayer.facet}"/></option>
                         </g:each>
@@ -88,7 +111,7 @@
                     </select>
                 </div>
             </td>
-            <td>
+            <td class="pointLayerControl">
                 <label for="sizeslider"><g:message code="map.maplayercontrols.tr01td02.label" default="Size"/>:</label>
                 <div class="layerControls">
                     <span class="slider-val" id="sizeslider-val">4</span>
@@ -98,11 +121,11 @@
             <td>
                 <label for="opacityslider"><g:message code="map.maplayercontrols.tr01td03.label" default="Opacity"/>:</label>
                 <div class="layerControls">
-                    <span class="slider-val" id="opacityslider-val">0.8</span>
+                    <span class="slider-val" id="opacityslider-val">${defaultOpacity}</span>
                 </div>
                 <div id="opacityslider" style="width:75px;"></div>
             </td>
-            <td>
+            <td class="pointLayerControl">
                 <label for="outlineDots"><g:message code="map.maplayercontrols.tr01td04.label" default="Outline"/>:</label>
                 <input type="checkbox" name="outlineDots" ${grailsApplication.config.getProperty('map.outlineDots') ? 'checked="checked"' : ''} value="true" class="layerControls" id="outlineDots">
             </td>
@@ -182,6 +205,9 @@
     // keyed by grid layer id, see the gridLayers comment at the top of this template
     var GRID_LAYERS = ${raw(groovy.json.JsonOutput.toJson(gridLayers.collectEntries { [(it.id): it] }).replace('</', '<\\/'))};
 
+    // keyed by auto display id, see the gridLayers comment at the top of this template
+    var AUTO_DISPLAYS = ${raw(groovy.json.JsonOutput.toJson(autoDisplays.collectEntries { [(it.id): it] }).replace('</', '<\\/'))};
+
     var GRID_LAYER_MESSAGES = {
         loading: '<g:message code="map.gridlayer.loading" default="Loading grid..." encodeAs="JavaScript"/>',
         zoom: '<g:message code="map.gridlayer.zoom" default="Zoom in to display this grid resolution." encodeAs="JavaScript"/>',
@@ -228,6 +254,7 @@
         },
         layerControl : null,
         currentLayers : [],
+        activeDisplay : null, // the display drawn by addQueryLayer, an auto display resolved for the zoom level
         gridLayerRequestId : 0,
         gridLayerXhr : null,
         additionalFqs : '',
@@ -349,7 +376,13 @@
                 popupAutoPan = false;
                 return;
             }
-            var gridLayer = GRID_LAYERS[$('#colourBySelect').val()];
+            var display = resolveMapDisplay($('#colourBySelect').val(), MAP_VAR.map.getZoom());
+            if (display !== MAP_VAR.activeDisplay) {
+                // an auto display crossed a zoom threshold
+                addQueryLayer(true, true);
+                return;
+            }
+            var gridLayer = GRID_LAYERS[display];
             if (gridLayer && MAP_VAR.currentLayers.length === 1) {
                 loadGridLayerDensity(MAP_VAR.currentLayers[0], gridLayer);
             }
@@ -462,7 +495,7 @@
             tooltip: 'hide'
         }).on('slideStop', function(ev){
             $('#sizeslider-val').html(ev.value);
-            if (!GRID_LAYERS[$('#colourBySelect').val()]) { // point size has no effect on grid layers
+            if (!GRID_LAYERS[MAP_VAR.activeDisplay]) { // point size has no effect on grid layers
                 addQueryLayer(true);
             }
         });
@@ -489,7 +522,7 @@
         });
 
         $('#outlineDots').click(function(e) {
-            if (!GRID_LAYERS[$('#colourBySelect').val()]) { // outline has no effect on grid layers
+            if (!GRID_LAYERS[MAP_VAR.activeDisplay]) { // outline has no effect on grid layers
                 addQueryLayer(true);
             }
         });
@@ -605,8 +638,12 @@
 
     /**
      * A tile layer to map colouring the dots by the selected colour.
+     * autoSwitch: redrawn because an auto display changed layer while zooming, which keeps the layer control state
+     * (a hidden occurrence layer stays hidden and overlays are left as they are).
      */
-    function addQueryLayer(redraw){
+    function addQueryLayer(redraw, autoSwitch){
+
+        var keepHidden = autoSwitch && MAP_VAR.currentLayers.length === 1 && !MAP_VAR.map.hasLayer(MAP_VAR.currentLayers[0]);
 
         $.each(MAP_VAR.currentLayers, function(index, value){
             MAP_VAR.map.removeLayer(MAP_VAR.currentLayers[index]);
@@ -615,8 +652,11 @@
 
         MAP_VAR.currentLayers = [];
 
-        var colourByFacet = $('#colourBySelect').val();
+        var colourByFacet = resolveMapDisplay($('#colourBySelect').val(), MAP_VAR.map.getZoom());
         var gridLayer = GRID_LAYERS[colourByFacet];
+        MAP_VAR.activeDisplay = colourByFacet;
+        // size and outline only apply to drawn points and the record density grid
+        $('.pointLayerControl').toggle(!gridLayer);
         var pointSize = $('#sizeslider-val').html();
         var opacity = $('#opacityslider-val').html();
         var outlineDots = $('#outlineDots').is(':checked');
@@ -625,7 +665,8 @@
             cancelGridLayerRequests();
         }
 
-        var envProperty = "color:${grailsApplication.config.getProperty('map.pointColour')};name:circle;size:"+pointSize+";opacity:"+opacity
+        // opacity is applied by the tile layer only, as for coloured facets (in ENV as well it would be applied twice)
+        var envProperty = "color:${grailsApplication.config.getProperty('map.pointColour')};name:circle;size:"+pointSize+";opacity:1"
 
         if(colourByFacet){
             if(colourByFacet == "gridVariable"){
@@ -712,9 +753,11 @@
             }
         }
         MAP_VAR.layerControl.addOverlay(layer, 'Occurrences');
-        MAP_VAR.map.addLayer(layer);
-        if (typeof layer.bringToFront === 'function') {
-            layer.bringToFront();
+        if (!keepHidden) {
+            MAP_VAR.map.addLayer(layer);
+            if (typeof layer.bringToFront === 'function') {
+                layer.bringToFront();
+            }
         }
         MAP_VAR.currentLayers.push(layer);
 
@@ -723,9 +766,13 @@
         }
 
         for (let key in MAP_VAR.overlays) {
-            MAP_VAR.map.addLayer(MAP_VAR.overlays[key]);
-            if (typeof MAP_VAR.overlays[key].bringToFront === 'function') {
-                MAP_VAR.overlays[key].bringToFront();
+            var overlay = MAP_VAR.overlays[key];
+            if (!autoSwitch) {
+                MAP_VAR.map.addLayer(overlay);
+            }
+            // keep overlays above the occurrence layer, an auto switch leaves hidden overlays hidden
+            if (MAP_VAR.map.hasLayer(overlay) && typeof overlay.bringToFront === 'function') {
+                overlay.bringToFront();
             }
         }
 
@@ -803,6 +850,33 @@
         }).filter(function(gridClass) {
             return gridClass.from <= gridClass.to;
         });
+    }
+
+    /**
+     * The display to draw for a 'Display' selection: an auto display resolves to the layer of its first step whose
+     * maxZoom is at least the zoom level, with 'points' meaning the default points (''). Steps whose grid layer is
+     * outside its own minZoom / maxZoom at this zoom level are skipped. Without a matching step the last step is used.
+     * Any other selection is returned unchanged.
+     */
+    function resolveMapDisplay(selection, zoom) {
+        var autoDisplay = AUTO_DISPLAYS[selection];
+        if (!autoDisplay) {
+            return selection;
+        }
+        var steps = autoDisplay.steps;
+        var step = steps.filter(function(candidate) {
+            var gridLayer = GRID_LAYERS[candidate.layer];
+            var layerShowsZoom = !gridLayer ||
+                (zoom >= (gridLayer.minZoom || 0) && (gridLayer.maxZoom == null || zoom <= gridLayer.maxZoom));
+            return layerShowsZoom && (candidate.maxZoom == null || zoom <= candidate.maxZoom);
+        })[0] || steps[steps.length - 1];
+        return step.layer === 'points' ? '' : step.layer;
+    }
+
+    function gridLayerLabel(gridLayer) {
+        return $('#colourBySelect option').filter(function() {
+            return this.value === gridLayer.id;
+        }).first().text().trim();
     }
 
     function buildGridCellFilterUrl(gridLayer, cellCode) {
@@ -948,7 +1022,7 @@
                     cellLayer.bindPopup(popup[0]);
                 });
 
-                setGridLayerLegend(null, $('#colourBySelect option:selected').text().trim(), minCount, maxCount, gridLayer.scale);
+                setGridLayerLegend(null, gridLayerLabel(gridLayer), minCount, maxCount, gridLayer.scale);
             });
         }).fail(function() {
             if (requestId === MAP_VAR.gridLayerRequestId) {
