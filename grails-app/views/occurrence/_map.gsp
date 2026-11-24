@@ -28,6 +28,13 @@
                 maxZoom: 13
               - layer: points
 
+    Grid cell colours, for all grid layers (default a yellow - brown ramp):
+
+    map:
+      gridLayers:
+        colour: '#c04384'              # optional, a ramp from a light tint of this colour up to the colour itself
+        colours: ['#fff7bc', ...]      # optional, the colour classes from low to high counts, takes precedence
+
     The default opacity of the occurrence layer is set by map.defaultOpacity (default 0.6).
 --%>
 <g:set var="gridLayers" value="${(grailsApplication.config.getProperty('map.gridLayers.layers', List, []) ?: []).findAll { it?.facet && it?.wfsLayer }.collect { [
@@ -47,6 +54,10 @@
                 maxZoom: step.maxZoom != null ? step.maxZoom as Integer : null
         ] }
 ] }.findAll { auto -> auto.steps }}"/>
+<g:set var="gridLayerColourConfig" value="${[
+        colour : grailsApplication.config.getProperty('map.gridLayers.colour', String, ''),
+        colours: (grailsApplication.config.getProperty('map.gridLayers.colours', List, []) ?: []).collect { it.toString() }
+]}"/>
 <g:set var="defaultOpacity" value="${grailsApplication.config.getProperty('map.defaultOpacity', String, '0.6')}"/>
 <div style="margin-bottom: 10px">
     <g:if test="${grailsApplication.config.getProperty('skin.useAlaSpatialPortal', Boolean, false)}">
@@ -207,6 +218,9 @@
 
     // keyed by auto display id, see the gridLayers comment at the top of this template
     var AUTO_DISPLAYS = ${raw(groovy.json.JsonOutput.toJson(autoDisplays.collectEntries { [(it.id): it] }).replace('</', '<\\/'))};
+
+    // map.gridLayers.colour / colours, see the comment at the top of this template
+    var GRID_LAYER_COLOUR_CONFIG = ${raw(groovy.json.JsonOutput.toJson(gridLayerColourConfig).replace('</', '<\\/'))};
 
     var GRID_LAYER_MESSAGES = {
         loading: '<g:message code="map.gridlayer.loading" default="Loading grid..." encodeAs="JavaScript"/>',
@@ -805,7 +819,40 @@
         );
     }
 
-    var GRID_LAYER_COLOURS = ['#fff7bc', '#fec44f', '#fe9929', '#ec7014', '#cc4c02', '#8c2d04'];
+    var DEFAULT_GRID_LAYER_COLOURS = ['#fff7bc', '#fec44f', '#fe9929', '#ec7014', '#cc4c02', '#8c2d04'];
+
+    /**
+     * The colour classes of the grid cells, from low to high counts: the configured colours, or a ramp from a light
+     * tint of the configured colour up to the colour itself, or the default ramp. Invalid colours are ignored.
+     */
+    function gridLayerColours(config) {
+        var hexColour = /^#?([0-9a-f]{6})$/i;
+        var colours = ((config && config.colours) || []).filter(function(colour) {
+            return hexColour.test(colour);
+        }).map(function(colour) {
+            return '#' + colour.replace('#', '').toLowerCase();
+        });
+        if (colours.length) {
+            return colours;
+        }
+        var base = hexColour.exec((config && config.colour) || '');
+        if (!base) {
+            return DEFAULT_GRID_LAYER_COLOURS;
+        }
+        var rgb = [0, 2, 4].map(function(offset) {
+            return parseInt(base[1].substr(offset, 2), 16);
+        });
+        var classes = DEFAULT_GRID_LAYER_COLOURS.length;
+        var lightestTint = 0.12; // share of the base colour in the lightest class, the rest is white
+        return DEFAULT_GRID_LAYER_COLOURS.map(function(colour, index) {
+            var tint = lightestTint + (1 - lightestTint) * index / (classes - 1);
+            return '#' + rgb.map(function(channel) {
+                return ('0' + Math.round(255 - (255 - channel) * tint).toString(16)).slice(-2);
+            }).join('');
+        });
+    }
+
+    var GRID_LAYER_COLOURS = gridLayerColours(GRID_LAYER_COLOUR_CONFIG);
 
     function setGridLayerLegend(message, layerLabel, minCount, maxCount, scale) {
         var $legend = $('.legendTable').empty();

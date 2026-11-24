@@ -26,7 +26,7 @@ const MESSAGES = {
 
 const DEFAULT_GRID_LAYER = {id: 'utm-grid-1000', facet: 'cl10531', wfsLayer: 'ALA:test', cellProperty: 'TAG', maxFeatures: 2500, minZoom: 0};
 
-function gridResponse(counts, {gridLayer = DEFAULT_GRID_LAYER, zoom = 10} = {}) {
+function gridResponse(counts, {gridLayer = DEFAULT_GRID_LAYER, zoom = 10, colourConfig = {colour: '', colours: []}} = {}) {
     const requests = [];
     let opacity = '0.8';
     let styles;
@@ -76,13 +76,14 @@ function gridResponse(counts, {gridLayer = DEFAULT_GRID_LAYER, zoom = 10} = {}) 
             query: '?q=*:*'
         },
         GRID_LAYER_MESSAGES: MESSAGES,
+        GRID_LAYER_COLOUR_CONFIG: colourConfig,
         L: {geoJson: () => ({getBounds: () => cellBounds})},
         URLSearchParams,
         window: {location: {pathname: '/occurrences/search', hash: ''}},
         $: jquery
     };
     vm.createContext(context);
-    vm.runInContext(templateSection('    var GRID_LAYER_COLOURS', '    function addLegendItem('), context);
+    vm.runInContext(templateSection('    var DEFAULT_GRID_LAYER_COLOURS', '    function addLegendItem('), context);
     context.setGridLayerLegend = message => legends.push(message);
     const layer = {
         clearLayers() { cleared++; },
@@ -505,4 +506,34 @@ test('count request failures display the grid error', async () => {
     response.requests[1].reject(new Error('Count service unavailable'));
     await new Promise(setImmediate);
     assert.equal(response.legends.at(-1), MESSAGES.error);
+});
+
+test('without colour configuration the default yellow - brown ramp is used', () => {
+    const {context} = gridResponse([]);
+    assert.deepEqual(Array.from(context.GRID_LAYER_COLOURS), ['#fff7bc', '#fec44f', '#fe9929', '#ec7014', '#cc4c02', '#8c2d04']);
+});
+
+test('a configured colour produces a ramp from a light tint up to the colour itself', async () => {
+    const response = gridResponse([1, 10, 100, 1000], {colourConfig: {colour: '#C04384', colours: []}});
+    const colours = Array.from(response.context.GRID_LAYER_COLOURS);
+    assert.equal(colours.length, 6);
+    assert.equal(colours.at(-1), '#c04384');
+    assert.equal(colours[0], '#f7e8f0', 'the lightest class is mostly white');
+    const red = colours.map(colour => parseInt(colour.slice(1, 3), 16));
+    red.slice(1).forEach((value, index) => assert(value < red[index], 'classes get darker towards high counts'));
+    const styles = await response.complete('0.6');
+    assert.deepEqual(styles.map(style => style.fillColor), [colours[0], colours[2], colours[4], colours[5]]);
+});
+
+test('configured colours take precedence and invalid entries are ignored', () => {
+    const {context} = gridResponse([], {colourConfig: {colour: '#c04384', colours: ['#EEEEEE', 'red', '999999', '#333333']}});
+    assert.deepEqual(Array.from(context.GRID_LAYER_COLOURS), ['#eeeeee', '#999999', '#333333']);
+    const classes = context.gridLayerClassBreaks(1, 1000, 'log');
+    assert.deepEqual(classes.map(gridClass => gridClass.colour), ['#eeeeee', '#999999', '#333333']);
+    assert.equal(classes.at(-1).to, 1000);
+});
+
+test('an invalid configured colour falls back to the default ramp', () => {
+    const {context} = gridResponse([], {colourConfig: {colour: 'inbo-pink', colours: []}});
+    assert.equal(context.GRID_LAYER_COLOURS[0], '#fff7bc');
 });
