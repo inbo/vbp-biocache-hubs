@@ -442,8 +442,7 @@ function loadLeafletMap() {
     }
 
     // Fix for asset pipeline confusing Leaflet WRT to path to images
-    // Leaflet 1.x appends the file name directly, so the path needs a trailing slash
-    L.Icon.Default.imagePath = MAP_VAR.mapIconUrlPath.replace(/\/?$/, '/');
+    L.Icon.Default.imagePath = MAP_VAR.mapIconUrlPath;
 
     // Add marker
     marker = L.marker(latLng, {
