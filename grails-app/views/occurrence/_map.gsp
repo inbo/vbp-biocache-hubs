@@ -33,7 +33,7 @@
 
     map:
       gridLayers:
-        colour: '#c04384'              # optional, a ramp from a light tint of this colour up to the colour itself
+        colour: '#c04384'              # optional, a ramp from a light tint via this colour to a dark shade of it
         colours: ['#fff7bc', ...]      # optional, the colour classes from low to high counts, takes precedence
 
     The default opacity of the occurrence layer is set by map.defaultOpacity (default 0.6).
@@ -831,7 +831,7 @@
 
     /**
      * The colour classes of the grid cells, from low to high counts: the configured colours, or a ramp from a light
-     * tint of the configured colour up to the colour itself, or the default ramp. Invalid colours are ignored.
+     * tint via the configured colour to a dark shade of it, or the default ramp. Invalid colours are ignored.
      */
     function gridLayerColours(config) {
         var hexColour = /^#?([0-9a-f]{6})$/i;
@@ -851,11 +851,15 @@
             return parseInt(base[1].substr(offset, 2), 16);
         });
         var classes = DEFAULT_GRID_LAYER_COLOURS.length;
-        var lightestTint = 0.12; // share of the base colour in the lightest class, the rest is white
+        var baseIndex = Math.round((classes - 1) * 0.6); // the class shown in the configured colour itself
+        var lightestTint = 0.12; // share of the configured colour in the lightest class, the rest is white
+        var darkestShade = 0.6; // share of black in the darkest class
         return DEFAULT_GRID_LAYER_COLOURS.map(function(colour, index) {
-            var tint = lightestTint + (1 - lightestTint) * index / (classes - 1);
             return '#' + rgb.map(function(channel) {
-                return ('0' + Math.round(255 - (255 - channel) * tint).toString(16)).slice(-2);
+                var value = index <= baseIndex ?
+                    255 - (255 - channel) * (lightestTint + (1 - lightestTint) * index / baseIndex) :
+                    channel * (1 - darkestShade * (index - baseIndex) / (classes - 1 - baseIndex));
+                return ('0' + Math.round(value).toString(16)).slice(-2);
             }).join('');
         });
     }

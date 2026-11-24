@@ -514,12 +514,11 @@ test('without colour configuration the default yellow - brown ramp is used', () 
     assert.deepEqual(Array.from(context.GRID_LAYER_COLOURS), ['#fff7bc', '#fec44f', '#fe9929', '#ec7014', '#cc4c02', '#8c2d04']);
 });
 
-test('a configured colour produces a ramp from a light tint up to the colour itself', async () => {
+test('a configured colour produces a ramp from a light tint via the colour to a dark shade', async () => {
     const response = gridResponse([1, 10, 100, 1000], {colourConfig: {colour: '#C04384', colours: []}});
     const colours = Array.from(response.context.GRID_LAYER_COLOURS);
     assert.equal(colours.length, 6);
-    assert.equal(colours.at(-1), '#c04384');
-    assert.equal(colours[0], '#f7e8f0', 'the lightest class is mostly white');
+    assert.deepEqual(colours, ['#f7e8f0', '#e5b1cc', '#d27aa8', '#c04384', '#862f5c', '#4d1b35']);
     const red = colours.map(colour => parseInt(colour.slice(1, 3), 16));
     red.slice(1).forEach((value, index) => assert(value < red[index], 'classes get darker towards high counts'));
     const styles = await response.complete('0.6');
