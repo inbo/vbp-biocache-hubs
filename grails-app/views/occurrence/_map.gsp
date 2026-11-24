@@ -8,6 +8,7 @@
     map:
       gridLayers:
         wfsUrl: https://example.org/geoserver/wfs   # defaults to /geoserver/wfs on the current host
+        listLayers: true               # optional, false offers only the auto displays in the Display dropdown
         layers:
           - id: utm-grid-5000          # optional, value usable in map.defaultFacetMapColourBy, defaults to grid-<facet>
             facet: cl200               # required, label is taken from the facet.<facet> message
@@ -54,6 +55,8 @@
                 maxZoom: step.maxZoom != null ? step.maxZoom as Integer : null
         ] }
 ] }.findAll { auto -> auto.steps }}"/>
+<g:set var="gridLayerLabels" value="${gridLayers.collectEntries { [(it.id): alatag.formatDynamicFacetName(fieldName: it.facet).toString()] }}"/>
+<g:set var="listGridLayers" value="${grailsApplication.config.getProperty('map.gridLayers.listLayers', Boolean, true)}"/>
 <g:set var="gridLayerColourConfig" value="${[
         colour : grailsApplication.config.getProperty('map.gridLayers.colour', String, ''),
         colours: (grailsApplication.config.getProperty('map.gridLayers.colours', List, []) ?: []).collect { it.toString() }
@@ -101,9 +104,11 @@
                         <g:each var="autoDisplay" in="${autoDisplays}">
                             <option value="${autoDisplay.id}" ${(defaultColourBy == autoDisplay.id)?'selected=\"selected\"':''}><g:message code="map.gridlayer.auto.${autoDisplay.id}" default="${autoDisplay.id}"/></option>
                         </g:each>
-                        <g:each var="gridLayer" in="${gridLayers}">
-                            <option value="${gridLayer.id}" ${(defaultColourBy == gridLayer.id)?'selected=\"selected\"':''}><alatag:formatDynamicFacetName fieldName="${gridLayer.facet}"/></option>
-                        </g:each>
+                        <g:if test="${listGridLayers}">
+                            <g:each var="gridLayer" in="${gridLayers}">
+                                <option value="${gridLayer.id}" ${(defaultColourBy == gridLayer.id)?'selected=\"selected\"':''}>${gridLayerLabels[gridLayer.id]}</option>
+                            </g:each>
+                        </g:if>
                         <option disabled role="separator">————————————</option>
                         <g:each var="group" in="${groupedFacetsRequested}">
                             <g:each var="fieldName" in="${group.value}">
@@ -215,6 +220,9 @@
 
     // keyed by grid layer id, see the gridLayers comment at the top of this template
     var GRID_LAYERS = ${raw(groovy.json.JsonOutput.toJson(gridLayers.collectEntries { [(it.id): it] }).replace('</', '<\\/'))};
+
+    // grid layer labels keyed by grid layer id, also for grid layers only used by auto displays
+    var GRID_LAYER_LABELS = ${raw(groovy.json.JsonOutput.toJson(gridLayerLabels).replace('</', '<\\/'))};
 
     // keyed by auto display id, see the gridLayers comment at the top of this template
     var AUTO_DISPLAYS = ${raw(groovy.json.JsonOutput.toJson(autoDisplays.collectEntries { [(it.id): it] }).replace('</', '<\\/'))};
@@ -921,9 +929,7 @@
     }
 
     function gridLayerLabel(gridLayer) {
-        return $('#colourBySelect option').filter(function() {
-            return this.value === gridLayer.id;
-        }).first().text().trim();
+        return GRID_LAYER_LABELS[gridLayer.id] || gridLayer.id;
     }
 
     function buildGridCellFilterUrl(gridLayer, cellCode) {

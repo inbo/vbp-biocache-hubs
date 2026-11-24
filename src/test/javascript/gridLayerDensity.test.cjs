@@ -32,6 +32,7 @@ function gridResponse(counts, {gridLayer = DEFAULT_GRID_LAYER, zoom = 10, colour
     let styles;
     let cleared = 0;
     const legends = [];
+    const legendLabels = [];
     const popups = [];
     const cellProperty = gridLayer.cellProperty || 'TAG';
     const features = counts.map((count, index) => ({properties: {[cellProperty]: 'cell-' + index}}));
@@ -39,8 +40,6 @@ function gridResponse(counts, {gridLayer = DEFAULT_GRID_LAYER, zoom = 10, colour
         const element = {
             attr: () => element,
             append: () => element,
-            filter: () => element,
-            first: () => element,
             text: value => {
                 if (value !== undefined) return element;
                 return selector === '#opacityslider-val' ? opacity : 'Grid layer';
@@ -77,6 +76,7 @@ function gridResponse(counts, {gridLayer = DEFAULT_GRID_LAYER, zoom = 10, colour
         },
         GRID_LAYER_MESSAGES: MESSAGES,
         GRID_LAYER_COLOUR_CONFIG: colourConfig,
+        GRID_LAYER_LABELS: {'utm-grid-1000': 'UTM 1K'},
         L: {geoJson: () => ({getBounds: () => cellBounds})},
         URLSearchParams,
         window: {location: {pathname: '/occurrences/search', hash: ''}},
@@ -84,7 +84,7 @@ function gridResponse(counts, {gridLayer = DEFAULT_GRID_LAYER, zoom = 10, colour
     };
     vm.createContext(context);
     vm.runInContext(templateSection('    var DEFAULT_GRID_LAYER_COLOURS', '    function addLegendItem('), context);
-    context.setGridLayerLegend = message => legends.push(message);
+    context.setGridLayerLegend = (message, label) => { legends.push(message); legendLabels.push(label); };
     const layer = {
         clearLayers() { cleared++; },
         addData() {},
@@ -99,6 +99,7 @@ function gridResponse(counts, {gridLayer = DEFAULT_GRID_LAYER, zoom = 10, colour
         requests,
         context,
         legends,
+        legendLabels,
         popups,
         load,
         get cleared() { return cleared; },
@@ -536,4 +537,18 @@ test('configured colours take precedence and invalid entries are ignored', () =>
 test('an invalid configured colour falls back to the default ramp', () => {
     const {context} = gridResponse([], {colourConfig: {colour: 'inbo-pink', colours: []}});
     assert.equal(context.GRID_LAYER_COLOURS[0], '#fff7bc');
+});
+
+test('the legend names the drawn grid layer, also when it is not listed in the dropdown', async () => {
+    const response = gridResponse([100, 200]);
+    await response.complete('0.6');
+    assert.equal(response.legendLabels.at(-1), 'UTM 1K');
+    const unlabelled = gridResponse([100], {gridLayer: {...DEFAULT_GRID_LAYER, id: 'ifbl-uur'}});
+    await unlabelled.complete('0.6');
+    assert.equal(unlabelled.legendLabels.at(-1), 'ifbl-uur', 'falls back to the grid layer id');
+});
+
+test('individual grid layers are listed in the dropdown unless map.gridLayers.listLayers is false', () => {
+    assert.match(source, /getProperty\('map\.gridLayers\.listLayers', Boolean, true\)/);
+    assert.match(source, /<g:if test="\$\{listGridLayers\}">\s*<g:each var="gridLayer" in="\$\{gridLayers\}">\s*<option value="\$\{gridLayer\.id\}"/);
 });
