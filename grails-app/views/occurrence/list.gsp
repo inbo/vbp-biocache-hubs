@@ -386,7 +386,7 @@
                                                     <g:each in="${group.value}" var="facetFromGroup">
                                                         <g:if test="${defaultFacets.containsKey(facetFromGroup)}">
                                                             <g:set var="count" value="${count + 1}"/>
-                                                            <input type="checkbox" name="facets" class="facetOpts" value="${facetFromGroup}"
+                                                            <input type="checkbox" name="facets" class="facetOpts" value="${facetFromGroup}" autocomplete="off"
                                                                 ${(defaultFacets.get(facetFromGroup)) ? 'checked=checked' : ''}>&nbsp;<alatag:message
                                                                 code="facet.${facetFromGroup}" default="${facetFromGroup}"/><br/>
                                                         </g:if>

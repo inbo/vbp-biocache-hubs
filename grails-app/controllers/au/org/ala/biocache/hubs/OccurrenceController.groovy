@@ -100,6 +100,12 @@ class OccurrenceController {
                 userFacets.each {
                     defaultFacets.put(it, true)
                 }
+            } else if (userFacets) {
+                // render the "adjust filters" checkboxes with the user's selection
+                Set selected = userFacets as Set
+                defaultFacets.keySet().each {
+                    defaultFacets.put(it, selected.contains(it))
+                }
             }
 
             String[] requestedFacets = userFacets ?: filteredFacets

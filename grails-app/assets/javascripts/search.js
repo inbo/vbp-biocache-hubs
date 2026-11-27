@@ -210,8 +210,7 @@ function init() {
       selectedFacets.length <= BC_CONF.maxFacets
     ) {
       // save facets to the user_facets cookie as string
-      $.cookie.json = false;
-      $.cookie("user_facets", selectedFacets, { expires: 365 });
+      saveUserFacetsCookie(selectedFacets.join(","));
       // reload page
       document.location.reload(true);
     } else if (selectedFacets.length > BC_CONF.maxFacets) {
@@ -229,37 +228,32 @@ function init() {
   // reset facet options to default values (clear cookie)
   $("#resetFacetOptions").click(function(e) {
     e.preventDefault();
-    $.removeCookie("user_facets");
+    clearUserFacetsCookies();
     document.location.reload(true);
   });
 
   // load stored prefs from cookie
+  $.cookie.json = false; // the DQ code toggles this global flag
   var userFacets = $.cookie("user_facets");
   if (userFacets) {
-    // re-set the same value to extend expiry to another year
-    $.cookie("user_facets", userFacets, { expires: 365 });
+    // re-set the same value to extend expiry to another year (and migrate
+    // cookies written by older versions without an explicit path)
+    saveUserFacetsCookie(userFacets);
 
-    $(":input.facetOpts").removeAttr("checked");
     var facetList = userFacets.split(",");
-    for (i in facetList) {
-      if (typeof facetList[i] === "string") {
-        var thisFacet = facetList[i];
-        $(":input.facetOpts[value='" + thisFacet + "']").attr(
-          "checked",
-          "checked",
-        );
-      }
-    }
+    $(":input.facetOpts").each(function() {
+      $(this).prop("checked", facetList.indexOf(this.value) > -1);
+    });
   } //  note removed else that did page refresh by triggering cookie update code.
 
   // select all and none buttons
   $(".selectNone").click(function(e) {
     e.preventDefault();
-    $(":input.facetOpts").removeAttr("checked");
+    $(":input.facetOpts").prop("checked", false);
   });
   $(".selectAll").click(function(e) {
     e.preventDefault();
-    $(":input.facetOpts").attr("checked", "checked");
+    $(":input.facetOpts").prop("checked", true);
   });
 
   // taxa search - show included synonyms with popup to allow user to refine to a single name
@@ -2842,4 +2836,31 @@ function customDebounce(func, timeout = 500) {
       func.apply(context, args);
     }, timeout);
   };
+}
+
+/**
+ * Older versions wrote the user_facets cookie without a path, so the browser
+ * stored it under the directory of whichever page it was written on
+ * (/occurrences, /occurrence, ...). Several copies could then exist, the
+ * server and the client picked different ones, and "reset to defaults" only
+ * removed one of them. Expire every copy that can be visible on this page.
+ */
+function clearUserFacetsCookies() {
+  var expired = "user_facets=; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+  document.cookie = expired; // default path of the current page
+  var segments = window.location.pathname.split("/");
+  var path = "";
+  document.cookie = expired + "; path=/";
+  for (var i = 1; i < segments.length; i++) {
+    if (!segments[i]) continue;
+    path += "/" + segments[i];
+    document.cookie = expired + "; path=" + path;
+    document.cookie = expired + "; path=" + path + "/";
+  }
+}
+
+function saveUserFacetsCookie(value) {
+  clearUserFacetsCookies();
+  $.cookie.json = false; // the DQ code toggles this global flag
+  $.cookie("user_facets", value, { expires: 365, path: "/" });
 }

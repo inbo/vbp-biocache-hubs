@@ -229,15 +229,11 @@ class PostProcessingService {
      * @return
      */
     static String getCookieValue(Cookie[] cookies, String cookieName, String defaultValue) {
-        String cookieValue = defaultValue // fall back
+        // Browsers send the cookie with the most specific path first, which is
+        // also the one the client side (jquery.cookie) reads, so use the first match
+        Cookie match = cookies?.find { it.name == cookieName }
 
-        cookies.each { cookie ->
-            if (cookie.name == cookieName) {
-                cookieValue = cookie.value
-            }
-        }
-
-        return cookieValue
+        return match != null ? match.value : defaultValue
     }
 
     /**
